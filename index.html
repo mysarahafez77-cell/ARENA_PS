@@ -15,7 +15,7 @@
   <!-- Toast Notifications -->
   <div id="toastContainer" class="toast-container"></div>
 
-  <!-- 1. Setup Screen (Fallback if no credentials) -->
+  <!-- 1. Setup Screen -->
   <div id="setupScreen" class="auth-wrapper hidden">
     <div class="auth-card">
       <div class="auth-logo">ARENA</div>
@@ -92,25 +92,113 @@
 
     <!-- Navigation Tabs -->
     <nav id="mainNav" class="main-nav">
-      <button class="nav-tab active" data-tab="rooms">🎮 الغرف والتشغيل</button>
+      <button class="nav-tab active" data-tab="dashboard">📊 الداشبورد</button>
+      <button class="nav-tab" data-tab="rooms">🎮 الغرف</button>
+      <button class="nav-tab" data-tab="tables">🪑 الترابيزات</button>
       <button class="nav-tab" data-tab="cafe">☕ الكافيه والتيك أواي</button>
       <button class="nav-tab" data-tab="reservations">📅 الحجوزات <span id="upcomingResBadge" class="nav-count hidden">0</span></button>
       <button class="nav-tab" data-tab="clients">📒 العملاء والنوتة</button>
-      <button class="nav-tab" data-tab="shift">💰 الوردية والخزينة</button>
-      <button class="nav-tab admin-only" data-tab="reports">📊 التقارير والسجل</button>
+      <button class="nav-tab" data-tab="shift">💰 الوردية والتسليم</button>
+      <button class="nav-tab admin-only" data-tab="reports">📑 التقارير والسجل</button>
       <button class="nav-tab admin-only" data-tab="settings">⚙️ الإعدادات والمنيو</button>
     </nav>
 
     <!-- Main Content Area -->
     <main class="main-content">
 
+      <!-- TAB 0: LIVE DASHBOARD -->
+      <section id="tab-dashboard" class="tab-panel active">
+        <div class="kpi-grid">
+          <div class="kpi-card highlight">
+            <span>إجمالي مبيعات اليوم (شامل النوتة)</span>
+            <strong id="dashTodayTotal">0 ج.م</strong>
+          </div>
+          <div class="kpi-card">
+            <span>الكاش الفعلي بالدرج الآن</span>
+            <strong id="dashDrawerCash">0 ج.م</strong>
+          </div>
+          <div class="kpi-card warning">
+            <span>مبيعات آجلة (على النوتة اليوم)</span>
+            <strong id="dashTodayNotah">0 ج.م</strong>
+          </div>
+          <div class="kpi-card info">
+            <span>تحصيلات نوتة سابقة اليوم</span>
+            <strong id="dashTodayNotahCollected">0 ج.م</strong>
+          </div>
+          <div class="kpi-card">
+            <span>فودافون كاش اليوم</span>
+            <strong id="dashTodayVfCash">0 ج.م</strong>
+          </div>
+          <div class="kpi-card">
+            <span>الغرف الشغالة الآن</span>
+            <strong id="dashActiveRoomsCount">0 / 0</strong>
+          </div>
+          <div class="kpi-card">
+            <span>الترابيزات المفتوحة الآن</span>
+            <strong id="dashActiveTablesCount">0 / 0</strong>
+          </div>
+          <div class="kpi-card danger">
+            <span>إجمالي مستحقات النوتة بالسوق</span>
+            <strong id="dashMarketNotah">0 ج.م</strong>
+          </div>
+        </div>
+
+        <div class="dash-main-grid">
+          <div class="card">
+            <div class="card-header-flex">
+              <h3 class="card-title">🎮 حالة الغرف والترابيزات لحظياً</h3>
+              <div class="btn-row">
+                <button class="btn btn-primary btn-xs" onclick="switchTab('rooms')">فتح الغرف</button>
+                <button class="btn btn-outline btn-xs" onclick="switchTab('tables')">فتح الترابيزات</button>
+              </div>
+            </div>
+            <div id="dashLiveUnitsGrid" class="dash-units-grid"></div>
+          </div>
+
+          <div class="card">
+            <h3 class="card-title">🔥 الأكثر مبيعاً اليوم & حجوزات قادمة</h3>
+            <div id="dashTopItemsList" class="mini-list"></div>
+            <hr class="divider" />
+            <h4 style="font-size:0.9rem;color:var(--ps-cyan);margin-bottom:8px;">📅 الحجوزات القادمة اليوم</h4>
+            <div id="dashUpcomingResList" class="mini-list"></div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-header-flex">
+            <h3 class="card-title">🧾 آخر الفواتير والعمليات اليوم</h3>
+            <span class="hint-text" style="margin:0">يوضح الدفع النقدي والمبالغ المسجلة على النوتة</span>
+          </div>
+          <div class="table-responsive">
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th>الوقت</th>
+                  <th>البيان</th>
+                  <th>الإجمالي</th>
+                  <th>تفاصيل التحصيل / النوتة</th>
+                  <th>الكاشير</th>
+                </tr>
+              </thead>
+              <tbody id="dashRecentTxBody"></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
       <!-- TAB 1: ROOMS (PS5 Cards) -->
-      <section id="tab-rooms" class="tab-panel active">
+      <section id="tab-rooms" class="tab-panel">
         <div id="roomsSummaryBar" class="rooms-summary-bar"></div>
         <div id="roomsGrid" class="ps5-rooms-grid"></div>
       </section>
 
-      <!-- TAB 2: DIRECT CAFE & TAKEAWAY POS -->
+      <!-- TAB 2: CAFE TABLES -->
+      <section id="tab-tables" class="tab-panel">
+        <div id="tablesSummaryBar" class="rooms-summary-bar"></div>
+        <div id="tablesGrid" class="tables-grid"></div>
+      </section>
+
+      <!-- TAB 3: DIRECT CAFE & TAKEAWAY POS -->
       <section id="tab-cafe" class="tab-panel">
         <div class="pos-layout">
           <div class="pos-catalog">
@@ -132,13 +220,13 @@
                 <span>الإجمالي:</span>
                 <strong id="directCartTotal">0 ج.م</strong>
               </div>
-              <button id="btnDirectCheckout" class="btn btn-success btn-block btn-lg">💵 تقفيل الفاتورة والدفع</button>
+              <button id="btnDirectCheckout" class="btn btn-success btn-block btn-lg">🖨️ تقفيل وطباعة</button>
             </div>
           </div>
         </div>
       </section>
 
-      <!-- TAB 3: RESERVATIONS -->
+      <!-- TAB 4: RESERVATIONS -->
       <section id="tab-reservations" class="tab-panel">
         <div class="split-grid">
           <div class="card">
@@ -203,7 +291,7 @@
         </div>
       </section>
 
-      <!-- TAB 4: CLIENTS & NOTAH (CREDIT) -->
+      <!-- TAB 5: CLIENTS & NOTAH (CREDIT) -->
       <section id="tab-clients" class="tab-panel">
         <div class="kpi-strip">
           <div class="kpi-card warning">
@@ -248,7 +336,7 @@
         </div>
       </section>
 
-      <!-- TAB 5: SHIFT & DRAWER -->
+      <!-- TAB 6: SHIFT, HANDOVER & DRAWER -->
       <section id="tab-shift" class="tab-panel">
         <!-- Closed Shift Banner -->
         <div id="shiftClosedCard" class="card empty-shift-card hidden">
@@ -262,9 +350,12 @@
           <div class="card shift-header-card">
             <div>
               <h3>🟢 الوردية الحالية مفتوحة</h3>
-              <p>الكاشير: <strong id="shiftStaffName">-</strong> | بداية الوردية: <strong id="shiftStartTime">-</strong></p>
+              <p>الكاشير المسؤول حالياً: <strong id="shiftStaffName">-</strong> | بداية الوردية: <strong id="shiftStartTime">-</strong></p>
             </div>
-            <button id="btnShowCloseShift" class="btn btn-danger btn-lg">🔴 تقفيل الوردية وتصدير التقرير</button>
+            <div class="btn-row">
+              <button id="btnShowHandoverShift" class="btn btn-warning btn-lg">🤝 تسليم الوردية لموظف آخر</button>
+              <button id="btnShowCloseShift" class="btn btn-danger btn-lg">🔴 تقفيل الوردية النهائي</button>
+            </div>
           </div>
 
           <div class="kpi-grid">
@@ -277,7 +368,7 @@
               <strong id="shiftRoomsRev">0 ج.م</strong>
             </div>
             <div class="kpi-card">
-              <span>إيراد الكافيه والتيك أواي</span>
+              <span>إيراد الترابيزات والكافيه</span>
               <strong id="shiftCafeRev">0 ج.م</strong>
             </div>
             <div class="kpi-card info">
@@ -317,6 +408,10 @@
               </div>
               <button id="btnAddExpense" class="btn btn-warning btn-block">➖ خصم المصروف من الدرج</button>
               <div id="shiftExpensesList" class="mini-list"></div>
+
+              <hr class="divider" />
+              <h3 class="card-title">🤝 سجل تسليمات الوردية بين الموظفين</h3>
+              <div id="shiftHandoversList" class="mini-list"></div>
             </div>
 
             <div class="card">
@@ -327,7 +422,7 @@
         </div>
       </section>
 
-      <!-- TAB 6: REPORTS (ADMIN ONLY) -->
+      <!-- TAB 7: REPORTS (ADMIN ONLY) -->
       <section id="tab-reports" class="tab-panel">
         <div class="card filter-bar">
           <div class="form-row inline-filters">
@@ -353,7 +448,7 @@
             <strong id="repRoomsRev">0 ج.م</strong>
           </div>
           <div class="kpi-card">
-            <span>إيراد الكافيه</span>
+            <span>إيراد الترابيزات والكافيه</span>
             <strong id="repCafeRev">0 ج.م</strong>
           </div>
           <div class="kpi-card warning">
@@ -389,7 +484,7 @@
         </div>
       </section>
 
-      <!-- TAB 7: SETTINGS & CUSTOMIZATION (ADMIN ONLY) -->
+      <!-- TAB 8: SETTINGS & CUSTOMIZATION (ADMIN ONLY) -->
       <section id="tab-settings" class="tab-panel">
         <div class="settings-grid">
 
@@ -419,10 +514,10 @@
             </div>
           </div>
 
-          <!-- WhatsApp Owner Report Settings -->
+          <!-- WhatsApp & Users -->
           <div class="card">
             <h3 class="card-title">📲 إعدادات تقرير الواتساب للمدير</h3>
-            <p class="hint-text">أدخل رقم واتساب صاحب/مدير المحل بكود الدولة بدون علامة + (مثال: <code>201012345678</code>) ليتم إرسال تقرير الوردية إليه بضغطة واحدة بعد التقفيل.</p>
+            <p class="hint-text">أدخل رقم واتساب صاحب/مدير المحل بكود الدولة بدون + (مثال: <code>201012345678</code>) ليتم إرسال تقارير التقفيل والتسليم إليه.</p>
             <div class="form-group">
               <label>رقم واتساب الإدارة</label>
               <input type="tel" id="setOwnerWhatsapp" placeholder="2010xxxxxxxx" dir="ltr" />
@@ -456,7 +551,7 @@
             <div id="settingsUsersList" class="mini-list"></div>
           </div>
 
-          <!-- Rooms & Pricing Management -->
+          <!-- Rooms & Tables Management -->
           <div class="card">
             <h3 class="card-title">🎮 إدارة الغرف وأسعار الساعة</h3>
             <div class="form-row">
@@ -484,6 +579,18 @@
             </div>
             <button id="btnAddRoom" class="btn btn-primary btn-block">➕ إضافة غرفة</button>
             <div id="settingsRoomsList" class="mini-list"></div>
+
+            <hr class="divider" />
+
+            <h3 class="card-title">🪑 إدارة الترابيزات</h3>
+            <div class="form-row">
+              <div class="form-group">
+                <label>اسم / رقم الترابيزة</label>
+                <input type="text" id="setTableName" placeholder="مثال: ترابيزة 7 أو VIP" />
+              </div>
+              <button id="btnAddTable" class="btn btn-primary">➕ إضافة ترابيزة</button>
+            </div>
+            <div id="settingsTablesList" class="mini-list"></div>
           </div>
 
           <!-- Games & Cafe Menu Management -->
@@ -549,7 +656,7 @@
 
   <!-- ================= MODALS ================= -->
 
-  <!-- MODAL 1: Start Room Session (Triggered by Double Click on PS5 Card) -->
+  <!-- MODAL 1: Start Room Session (Double Click on PS5 Card) -->
   <div id="modalStartRoom" class="modal-backdrop hidden">
     <div class="modal-box">
       <div class="modal-header">
@@ -613,6 +720,26 @@
     </div>
   </div>
 
+  <!-- MODAL 1B: Open Cafe Table -->
+  <div id="modalStartTable" class="modal-backdrop hidden">
+    <div class="modal-box modal-sm">
+      <div class="modal-header">
+        <h3 id="startTableTitle">🪑 فتح ترابيزة</h3>
+        <button class="modal-close" onclick="closeModal('modalStartTable')">✕</button>
+      </div>
+      <div class="modal-body">
+        <input type="hidden" id="startTableId" />
+        <div class="form-group">
+          <label>اسم العميل أو المجموعة (اختياري)</label>
+          <input type="text" id="startTableClientName" placeholder="مثال: شلة أحمد" />
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button id="btnConfirmStartTable" class="btn btn-success btn-block btn-lg">▶️ فتح الترابيزة وبدء الطلبات</button>
+      </div>
+    </div>
+  </div>
+
   <!-- MODAL 2: Switch Mode (Single <-> Multi ONLY) -->
   <div id="modalSwitchMode" class="modal-backdrop hidden">
     <div class="modal-box modal-sm">
@@ -635,14 +762,15 @@
     </div>
   </div>
 
-  <!-- MODAL 3: Wide Visual POS Window for Room Orders -->
+  <!-- MODAL 3: Wide Visual POS Window (For Rooms & Tables) -->
   <div id="modalPosOrders" class="modal-backdrop hidden">
     <div class="modal-box modal-wide">
       <div class="modal-header">
-        <h3 id="posModalTitle">🛒 إضافة طلبات للغرفة</h3>
+        <h3 id="posModalTitle">🛒 إضافة طلبات</h3>
         <button class="modal-close" onclick="closeModal('modalPosOrders')">✕</button>
       </div>
       <div class="modal-body pos-modal-body">
+        <input type="hidden" id="posTargetType" value="room" />
         <input type="hidden" id="posTargetRoomId" />
         <div class="pos-layout">
           <div class="pos-catalog">
@@ -663,7 +791,7 @@
                 <span>إجمالي الإضافة:</span>
                 <strong id="posCartTotal">0 ج.م</strong>
               </div>
-              <button id="btnConfirmRoomOrders" class="btn btn-success btn-block btn-lg">✅ تأكيد وإضافة لحساب الغرفة</button>
+              <button id="btnConfirmRoomOrders" class="btn btn-success btn-block btn-lg">✅ تأكيد وإضافة للحساب</button>
             </div>
           </div>
         </div>
@@ -671,7 +799,7 @@
     </div>
   </div>
 
-  <!-- MODAL 4: Checkout & Notah Split Payment -->
+  <!-- MODAL 4: Checkout & Notah Split Payment (SINGLE BUTTON: تقفيل وطباعة) -->
   <div id="modalCheckout" class="modal-backdrop hidden">
     <div class="modal-box">
       <div class="modal-header">
@@ -679,9 +807,6 @@
         <button class="modal-close" onclick="closeModal('modalCheckout')">✕</button>
       </div>
       <div class="modal-body">
-        <input type="hidden" id="checkoutContextType" />
-        <input type="hidden" id="checkoutContextId" />
-
         <div id="checkoutBreakdownBox" class="checkout-breakdown"></div>
 
         <div class="checkout-totals-panel">
@@ -716,7 +841,6 @@
             </div>
           </div>
 
-          <!-- Client selector shown when payNotah > 0 -->
           <div id="checkoutNotahClientBox" class="notah-client-box hidden">
             <div class="notah-box-header">
               <label>اختر بروفايل العميل لتسجيل النوتة عليه *</label>
@@ -734,9 +858,8 @@
           <div id="checkoutBalanceStatus" class="balance-status valid">المبلغ مطابق للإجمالي ✅</div>
         </div>
       </div>
-      <div class="modal-footer checkout-actions">
-        <button id="btnConfirmCheckout" class="btn btn-success btn-lg">✅ تأكيد وتقفيل</button>
-        <button id="btnConfirmCheckoutPrint" class="btn btn-primary btn-lg">🖨️ تقفيل وطباعة</button>
+      <div class="modal-footer">
+        <button id="btnConfirmCheckoutPrint" class="btn btn-success btn-block btn-lg">🖨️ تقفيل وطباعة</button>
       </div>
     </div>
   </div>
@@ -761,7 +884,6 @@
           </div>
         </div>
 
-        <!-- Collection Form -->
         <div class="collect-notah-card">
           <h4>💰 تحصيل / سداد مبلغ من النوتة</h4>
           <div class="form-row">
@@ -812,6 +934,49 @@
     </div>
   </div>
 
+  <!-- MODAL 6B: Handover Shift Between Employees -->
+  <div id="modalHandoverShift" class="modal-backdrop hidden">
+    <div class="modal-box">
+      <div class="modal-header">
+        <h3>🤝 تسليم الوردية لموظف آخر</h3>
+        <button class="modal-close" onclick="closeModal('modalHandoverShift')">✕</button>
+      </div>
+      <div class="modal-body">
+        <div id="handoverSummaryPreview" class="shift-summary-box"></div>
+
+        <div id="preHandoverInputBox">
+          <div class="form-row">
+            <div class="form-group">
+              <label>الموظف المُستلِم للوردية *</label>
+              <select id="handoverTargetUser"></select>
+            </div>
+            <div class="form-group">
+              <label>الرقم السري (PIN) للمُستلِم *</label>
+              <input type="password" id="handoverTargetPin" maxlength="8" inputmode="numeric" placeholder="••••" />
+            </div>
+          </div>
+          <div class="form-row">
+            <div class="form-group">
+              <label>الكاش الفعلي المُسلَّم في الدرج الآن (ج.م)</label>
+              <input type="number" id="handoverActualCash" min="0" />
+            </div>
+            <div class="form-group">
+              <label>ملاحظات التسليم (اختياري)</label>
+              <input type="text" id="handoverNotes" placeholder="مثال: تم تسليم الدرج كامل" />
+            </div>
+          </div>
+          <div id="handoverDiffBadge" class="balance-status valid">الكاش المُسلَّم مطابق للدرج ✅</div>
+          <button id="btnConfirmHandoverShift" class="btn btn-warning btn-block btn-lg" style="margin-top:10px">🤝 تأكيد تسليم الوردية وتحويل الحساب</button>
+        </div>
+
+        <div id="postHandoverActionsBox" class="post-close-actions hidden">
+          <div class="success-banner">✅ تم تسليم الوردية وتحويل الحساب للموظف الجديد بنجاح!</div>
+          <button id="btnSendHandoverWhatsapp" class="btn btn-whatsapp btn-block btn-lg">📲 إرسال إشعار التسليم على واتساب المدير</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <!-- MODAL 7: Close Shift & WhatsApp Export -->
   <div id="modalCloseShift" class="modal-backdrop hidden">
     <div class="modal-box">
@@ -840,7 +1005,7 @@
     </div>
   </div>
 
-  <!-- Thermal Print Area (Hidden on screen, visible on print) -->
+  <!-- Thermal Print Area -->
   <div id="printReceiptArea" class="print-only">
     <div id="receiptPrintContent" class="receipt-paper"></div>
   </div>
