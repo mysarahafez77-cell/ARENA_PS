@@ -384,6 +384,38 @@ input:focus, select:focus, textarea:focus {
 .tab-panel { display: none; }
 .tab-panel.active { display: block; }
 
+/* ================= DASHBOARD ================= */
+.dash-main-grid {
+  display: grid;
+  grid-template-columns: 1.5fr 1fr;
+  gap: 16px;
+  align-items: start;
+}
+
+.dash-units-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(175px, 1fr));
+  gap: 10px;
+}
+
+.dash-unit-chip {
+  background: var(--bg-card);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  padding: 10px 12px;
+  cursor: pointer;
+  transition: border-color 0.15s;
+}
+.dash-unit-chip:hover { border-color: var(--ps-cyan); }
+.dash-unit-chip.busy {
+  border-color: var(--ps-cyan);
+  background: rgba(0, 112, 209, 0.15);
+}
+.dash-unit-chip.table-busy {
+  border-color: var(--warning);
+  background: rgba(245, 158, 11, 0.12);
+}
+
 /* ================= PS5 ROOM CARDS ================= */
 .rooms-summary-bar {
   display: flex;
@@ -418,7 +450,6 @@ input:focus, select:focus, textarea:focus {
   user-select: none;
 }
 
-/* PS5 Curved White Side Panels Aesthetic */
 .ps5-card::before,
 .ps5-card::after {
   content: '';
@@ -432,7 +463,6 @@ input:focus, select:focus, textarea:focus {
 .ps5-card::before { right: 0; border-radius: 0 18px 14px 0; }
 .ps5-card::after  { left: 0; border-radius: 18px 0 0 14px; }
 
-/* PS5 LED Light Strip */
 .ps5-led-strip {
   height: 5px;
   margin: 0 11px;
@@ -440,9 +470,7 @@ input:focus, select:focus, textarea:focus {
   transition: all 0.3s ease;
 }
 
-.ps5-card.status-idle {
-  cursor: pointer;
-}
+.ps5-card.status-idle { cursor: pointer; }
 .ps5-card.status-idle:hover {
   transform: translateY(-3px);
   border-color: var(--ps-cyan);
@@ -457,9 +485,7 @@ input:focus, select:focus, textarea:focus {
   box-shadow: 0 2px 14px var(--ps-cyan);
 }
 
-.ps5-card.status-paused {
-  border-color: var(--warning);
-}
+.ps5-card.status-paused { border-color: var(--warning); }
 .ps5-card.status-paused .ps5-led-strip {
   background: var(--warning);
   box-shadow: 0 2px 14px var(--warning);
@@ -601,6 +627,53 @@ input:focus, select:focus, textarea:focus {
 
 .ps5-actions-grid .btn-checkout-full {
   grid-column: span 2;
+}
+
+/* ================= CAFE TABLES ================= */
+.tables-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 16px;
+}
+
+.table-card {
+  background: var(--bg-surface);
+  border: 2px solid var(--border-color);
+  border-radius: 16px;
+  padding: 16px;
+  box-shadow: var(--shadow);
+  transition: all 0.2s ease;
+  user-select: none;
+}
+
+.table-card.idle {
+  cursor: pointer;
+}
+.table-card.idle:hover {
+  border-color: var(--warning);
+  transform: translateY(-2px);
+}
+
+.table-card.open {
+  border-color: var(--warning);
+  background: linear-gradient(160deg, #1d263b 0%, #121829 100%);
+}
+
+.table-card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 10px;
+}
+
+.table-orders-preview {
+  background: rgba(0, 0, 0, 0.28);
+  border-radius: 8px;
+  padding: 8px 10px;
+  margin: 10px 0;
+  font-size: 0.82rem;
+  max-height: 110px;
+  overflow-y: auto;
 }
 
 /* ================= WIDE VISUAL POS GRID ================= */
@@ -939,11 +1012,11 @@ input:focus, select:focus, textarea:focus {
 }
 
 .mini-list {
-  margin-top: 12px;
+  margin-top: 10px;
   display: flex;
   flex-direction: column;
   gap: 8px;
-  max-height: 300px;
+  max-height: 280px;
   overflow-y: auto;
 }
 
@@ -1234,12 +1307,6 @@ input:focus, select:focus, textarea:focus {
 .balance-status.valid   { background: rgba(16, 185, 129, 0.16); color: var(--success); }
 .balance-status.invalid { background: rgba(239, 68, 68, 0.16); color: var(--danger); }
 
-.checkout-actions {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 10px;
-}
-
 /* Client Details Modal */
 .client-profile-banner {
   display: flex;
@@ -1300,7 +1367,7 @@ input:focus, select:focus, textarea:focus {
   border-right-color: var(--success);
 }
 
-/* Close Shift Summary */
+/* Close & Handover Shift Summary */
 .shift-summary-box {
   background: var(--bg-card);
   padding: 12px;
@@ -1424,6 +1491,7 @@ input:focus, select:focus, textarea:focus {
 
 /* ================= RESPONSIVE ================= */
 @media (max-width: 960px) {
+  .dash-main-grid,
   .pos-layout,
   .split-grid {
     grid-template-columns: 1fr;
