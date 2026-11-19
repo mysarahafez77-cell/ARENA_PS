@@ -694,7 +694,7 @@
               </div>
             </div>
 
-            <!-- Management Password, Users & WhatsApp -->
+            <!-- Management Password, Users, WhatsApp & Reset Data -->
             <div class="card">
               <h3 class="card-title">🔑 باسورد الإدارة (قفل الداشبورد والإعدادات)</h3>
               <p class="hint-text">هذا الباسورد مخصص لحساب Admin وفتح الداشبورد والتقارير والإعدادات.</p>
@@ -747,6 +747,15 @@
               <div class="btn-row">
                 <button id="btnSaveWhatsapp" class="btn btn-primary">💾 حفظ الرقم</button>
                 <button id="btnTestWhatsapp" class="btn btn-success">📲 تجربة الإرسال</button>
+              </div>
+
+              <hr class="divider" />
+
+              <h3 class="card-title" style="color:var(--danger);">⚠️ تصفير البيانات (Reset Data)</h3>
+              <p class="hint-text">استخدم هذه الأزرار بحذر لمسح البيانات التجريبية أو إعادة ضبط النظام.</p>
+              <div class="btn-row">
+                <button type="button" id="btnResetOperations" class="btn btn-warning">🧹 تصفير الفواتير والورديات فقط</button>
+                <button type="button" id="btnFactoryReset" class="btn btn-danger">🗑️ تصفير شامل (إعادة ضبط المصنع)</button>
               </div>
             </div>
 
