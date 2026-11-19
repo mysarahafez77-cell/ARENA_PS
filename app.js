@@ -1,9 +1,10 @@
 /* ==========================================================================
-   ARENA POS v4.0 - Complete Operations & Management System
-   Includes: Management Password Lock, Business Day Shift Locking, Wrong Day Fixer,
-   Comprehensive Sales Analytics Filters, PS5 Room Cards + Double-Click, Cafe Tables,
+   ARENA POS v4.1 - Complete Operations & Management System
+   Includes: Single Admin (1234) Auto-Unlock, Dashboard Staff Manager,
+   Admin-Only Full System Reset (Cloud + Local), Business Day Shift Locking,
+   Wrong Day Fixer, Sales Analytics Filters, PS5 Room Cards, Cafe Tables,
    Visual POS Grid + Inventory Tracking, Receipt Designer (80mm/58mm),
-   Notah Credit System, Reservations, Shift Handover + WhatsApp Reports, Offline Queue
+   Notah Credit System, Reservations, Shift Handover + WhatsApp Reports
    ========================================================================== */
 
 const DEFAULT_SB_URL = 'https://ixzsopivjyuxlesagkju.supabase.co';
@@ -118,6 +119,7 @@ function getExpBusinessDate(exp) {
 document.addEventListener('DOMContentLoaded', async () => {
   registerServiceWorker();
   setupNetworkListeners();
+  ensureResetModalExists();
   bindEvents();
 
   const params = new URLSearchParams(window.location.search);
@@ -148,6 +150,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   if (savedUser) {
     try {
       activeUser = JSON.parse(savedUser);
+      isMgmtUnlocked = activeUser.role === 'admin';
       enterMainApp();
       return;
     } catch (_) {}
@@ -170,13 +173,13 @@ function setupNetworkListeners() {
     const text = document.getElementById('connectionText');
     const loginHint = document.getElementById('loginOfflineHint');
     if (isOnline) {
-      badge.className = 'status-badge online';
-      text.textContent = 'متصل Live';
+      if (badge) badge.className = 'status-badge online';
+      if (text) text.textContent = 'متصل Live';
       if (loginHint) loginHint.classList.add('hidden');
       flushOfflineQueue();
     } else {
-      badge.className = 'status-badge offline';
-      text.textContent = 'أوفلاين (محلي)';
+      if (badge) badge.className = 'status-badge offline';
+      if (text) text.textContent = 'أوفلاين (محلي)';
       if (loginHint) loginHint.classList.remove('hidden');
     }
     updateQueueBadge();
@@ -222,6 +225,7 @@ function loadLocalCache() {
 }
 
 function ensureDefaultsIfEmpty() {
+  // Single Admin Account with password 1234
   if (!state.users || state.users.length === 0) {
     state.users = [{ id: 'admin-default', name: 'المدير العام', pin: '1234', role: 'admin' }];
   }
@@ -393,7 +397,7 @@ async function syncAllDataFromCloud() {
       }
     }
 
-    if (roomsRes.data && roomsRes.data.length > 0) {
+    if (roomsRes.data) {
       state.rooms = roomsRes.data.map(normalizeRoom);
     }
     if (gamesRes.data && gamesRes.data.length > 0) {
@@ -416,6 +420,9 @@ async function syncAllDataFromCloud() {
     }
     if (usersRes.data && usersRes.data.length > 0) {
       state.users = usersRes.data;
+    } else {
+      state.users = [{ id: 'admin-default', name: 'المدير العام', pin: '1234', role: 'admin' }];
+      await dbMutate('users', 'upsert', state.users[0]);
     }
     if (clientsRes.data) {
       state.clients = clientsRes.data.map((c) => ({
@@ -496,11 +503,11 @@ function populateLoginUserSelect() {
   if (!sel) return;
   const currentVal = sel.value;
   sel.innerHTML =
-    `<option value="">-- دخول سريع بالرقم السري / الباسورد --</option>` +
+    `<option value="">-- دخول سريع بالباسورد / PIN --</option>` +
     state.users
       .map(
         (u) =>
-          `<option value="${u.id}">${escapeHtml(u.name)} (${u.role === 'admin' ? 'مدير' : 'كاشير'})</option>`
+          `<option value="${u.id}">${escapeHtml(u.name)} (${u.role === 'admin' ? 'مدير Admin' : 'موظف / كاشير'})</option>`
       )
       .join('');
   if (currentVal) sel.value = currentVal;
@@ -527,23 +534,26 @@ function handleLogin() {
   }
 
   if (!found) {
-    errEl.classList.remove('hidden');
+    if (errEl) errEl.classList.remove('hidden');
     pinInput.value = '';
     return;
   }
 
-  errEl.classList.add('hidden');
+  if (errEl) errEl.classList.add('hidden');
   pinInput.value = '';
   activeUser = found;
-  isMgmtUnlocked = false;
+  // Admin account unlocks management pages immediately; staff accounts keep them locked
+  isMgmtUnlocked = found.role === 'admin';
   sessionStorage.setItem(STORAGE_KEYS.USER, JSON.stringify(found));
   enterMainApp();
 }
 
 function enterMainApp() {
   showScreen('mainApp');
-  document.getElementById('currentUserBadge').textContent =
-    `${activeUser.name} (${activeUser.role === 'admin' ? 'مدير' : 'كاشير'})`;
+  const badgeEl = document.getElementById('currentUserBadge');
+  if (badgeEl) {
+    badgeEl.textContent = `${activeUser.name} (${activeUser.role === 'admin' ? 'مدير Admin' : 'موظف / كاشير'})`;
+  }
 
   updateMgmtLockUI();
 
@@ -595,30 +605,40 @@ function openMgmtAuthModal(targetTab = 'dashboard') {
     switchTab(targetTab);
     return;
   }
-  document.getElementById('mgmtTargetTab').value = targetTab;
-  document.getElementById('mgmtPasswordInput').value = '';
-  document.getElementById('mgmtAuthError').classList.add('hidden');
+  const targetInput = document.getElementById('mgmtTargetTab');
+  const passInput = document.getElementById('mgmtPasswordInput');
+  const errEl = document.getElementById('mgmtAuthError');
+  if (targetInput) targetInput.value = targetTab;
+  if (passInput) passInput.value = '';
+  if (errEl) errEl.classList.add('hidden');
   openModal('modalMgmtAuth');
-  setTimeout(() => document.getElementById('mgmtPasswordInput')?.focus(), 100);
+  setTimeout(() => passInput?.focus(), 100);
 }
 
 function verifyMgmtPassword() {
-  const entered = (document.getElementById('mgmtPasswordInput').value || '').trim();
-  const actualPass = String(state.settings.mgmtPassword || '1234');
+  const entered = (document.getElementById('mgmtPasswordInput')?.value || '').trim();
+  const adminUser = state.users.find((u) => u.role === 'admin');
+  const validPasswords = [
+    String(state.settings.mgmtPassword || '1234'),
+    adminUser ? String(adminUser.pin) : '1234'
+  ];
   const errEl = document.getElementById('mgmtAuthError');
 
-  if (entered !== actualPass) {
-    errEl.classList.remove('hidden');
-    document.getElementById('mgmtPasswordInput').value = '';
-    document.getElementById('mgmtPasswordInput').focus();
+  if (!validPasswords.includes(entered)) {
+    if (errEl) errEl.classList.remove('hidden');
+    const inp = document.getElementById('mgmtPasswordInput');
+    if (inp) {
+      inp.value = '';
+      inp.focus();
+    }
     return;
   }
 
-  errEl.classList.add('hidden');
+  if (errEl) errEl.classList.add('hidden');
   isMgmtUnlocked = true;
   closeModal('modalMgmtAuth');
   updateMgmtLockUI();
-  const targetTab = document.getElementById('mgmtTargetTab').value || 'dashboard';
+  const targetTab = document.getElementById('mgmtTargetTab')?.value || 'dashboard';
   switchTab(targetTab);
   showToast('تم فتح لوحة تحكم الإدارة بنجاح 🔓', 'success');
 }
@@ -655,7 +675,7 @@ function switchTab(tabName) {
   if (tabName === 'settings') renderSettings();
 }
 
-/* ================= 5. MANAGEMENT DASHBOARD & ANALYTICS FILTERS ================= */
+/* ================= 5. MANAGEMENT DASHBOARD, STAFF ACCOUNTS & ANALYTICS FILTERS ================= */
 
 function getAllRecordedBusinessDays() {
   const daysSet = new Set();
@@ -674,7 +694,6 @@ function populateDashboardFilters() {
   const currentDay = openShift ? getShiftBusinessDate(openShift) : getLocalDateStr();
   const allDays = getAllRecordedBusinessDays();
 
-  // Business Day Filter
   const daySel = document.getElementById('dashFilterBusinessDay');
   if (daySel) {
     const prev = daySel.value || 'CURRENT';
@@ -688,7 +707,6 @@ function populateDashboardFilters() {
     }
   }
 
-  // Wrong Day Select (for fixing wrong opened business day)
   const wrongDaySel = document.getElementById('dashWrongDaySelect');
   if (wrongDaySel) {
     const prevWrong = wrongDaySel.value;
@@ -712,7 +730,6 @@ function populateDashboardFilters() {
     correctDayInput.value = getLocalDateStr();
   }
 
-  // Rooms & Tables Filter
   const roomSel = document.getElementById('dashFilterRoom');
   if (roomSel) {
     const prevRoom = roomSel.value || 'ALL';
@@ -727,7 +744,6 @@ function populateDashboardFilters() {
     }
   }
 
-  // Drinks / Menu Items Filter
   const drinkSel = document.getElementById('dashFilterDrink');
   if (drinkSel) {
     const prevDrink = drinkSel.value || 'ALL';
@@ -741,7 +757,6 @@ function populateDashboardFilters() {
     }
   }
 
-  // Cashier Filter
   const cashierSel = document.getElementById('dashFilterCashier');
   if (cashierSel) {
     const prevCashier = cashierSel.value || 'ALL';
@@ -750,7 +765,7 @@ function populateDashboardFilters() {
       if (t.staff_name) cashierNames.add(t.staff_name);
     });
     cashierSel.innerHTML =
-      `<option value="ALL">كل الكاشيرية</option>` +
+      `<option value="ALL">كل الموظفين / الكاشيرية</option>` +
       Array.from(cashierNames)
         .map((name) => `<option value="${escapeAttr(name)}">👤 ${escapeHtml(name)}</option>`)
         .join('');
@@ -784,6 +799,168 @@ function extractTxItems(tx) {
   });
   return found;
 }
+
+function injectAdminDashboardTools() {
+  const dashContainer = document.getElementById('dashboardUnlockedContent');
+  if (!dashContainer) return;
+
+  const isAdmin = activeUser && activeUser.role === 'admin';
+
+  // 1. Staff Accounts Manager inside Dashboard (Admin Only)
+  let staffCard = document.getElementById('dashStaffManagerCard');
+  if (!isAdmin) {
+    if (staffCard) staffCard.remove();
+  } else {
+    if (!staffCard) {
+      staffCard = document.createElement('div');
+      staffCard.id = 'dashStaffManagerCard';
+      staffCard.className = 'card';
+      staffCard.style.marginTop = '16px';
+      staffCard.style.borderColor = 'rgba(0, 212, 255, 0.35)';
+      dashContainer.appendChild(staffCard);
+    }
+
+    staffCard.innerHTML = `
+      <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:10px;">
+        <h3 style="margin:0;">👥 إدارة حسابات الموظفين والباسوردات (صلاحية Admin)</h3>
+        <span class="badge badge-upcoming">الحسابات المسجلة: ${state.users.length}</span>
+      </div>
+      <p class="hint-text" style="margin-bottom:10px;">أنشئ حساب لكل موظف بالاسم والباسورد الخاص به. حسابات الموظفين تفتح شاشات التشغيل فقط وتظل صفحات الإدارة مقفولة عليهم.</p>
+      <div class="form-row" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:8px;margin-bottom:12px;">
+        <input type="hidden" id="dashEditUserId" value="" />
+        <input type="text" id="dashNewUserName" class="input-field" placeholder="اسم الموظف (مثلاً: أحمد)" />
+        <input type="text" id="dashNewUserPin" class="input-field" placeholder="باسورد الدخول (مثلاً: 2222)" />
+        <select id="dashNewUserRole" class="input-field">
+          <option value="staff">موظف / كاشير (تشغيل فقط)</option>
+          <option value="admin">مدير (Admin كامل الصلاحيات)</option>
+        </select>
+        <div class="btn-row">
+          <button type="button" id="btnDashSaveUser" class="btn btn-primary" onclick="handleDashSaveUser()">➕ إضافة حساب موظف</button>
+          <button type="button" id="btnDashCancelUser" class="btn btn-outline hidden" onclick="resetDashUserForm()">إلغاء</button>
+        </div>
+      </div>
+      <div id="dashUsersList">
+        ${state.users
+          .map(
+            (u) => `
+          <div class="mini-list-item">
+            <span>
+              <strong>${escapeHtml(u.name)}</strong>
+              <span class="badge ${u.role === 'admin' ? 'badge-upcoming' : 'badge-completed'}" style="margin-right:6px;">
+                ${u.role === 'admin' ? 'مدير Admin' : 'موظف / كاشير'}
+              </span>
+              — الباسورد: <code>${escapeHtml(u.pin)}</code>
+            </span>
+            <div class="btn-row">
+              <button type="button" class="btn btn-outline btn-xs" onclick="editDashUserForm('${u.id}')">✏️ تعديل / تغيير باسورد</button>
+              ${
+                u.id !== 'admin-default'
+                  ? `<button type="button" class="btn btn-danger btn-xs" onclick="deleteUser('${u.id}')">حذف</button>`
+                  : `<span style="font-size:0.75rem;color:var(--text-muted)">الحساب الرئيسي</span>`
+              }
+            </div>
+          </div>
+        `
+          )
+          .join('')}
+      </div>
+    `;
+  }
+
+  // 2. Full System Reset Card (Strictly Admin Only)
+  let resetCard = document.getElementById('dashResetSystemCard');
+  if (!isAdmin) {
+    if (resetCard) resetCard.remove();
+  } else {
+    if (!resetCard) {
+      resetCard = document.createElement('div');
+      resetCard.id = 'dashResetSystemCard';
+      resetCard.className = 'card';
+      resetCard.style.marginTop = '16px';
+      resetCard.style.border = '1px solid rgba(239, 68, 68, 0.5)';
+      resetCard.style.background = 'rgba(239, 68, 68, 0.06)';
+      dashContainer.appendChild(resetCard);
+    }
+
+    resetCard.innerHTML = `
+      <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px;">
+        <div>
+          <h3 style="margin:0 0 4px 0;color:#f87171;">⚠️ تصفير السيستم بالكامل (Reset System)</h3>
+          <p class="hint-text" style="margin:0;">متاح لحساب <strong>Admin</strong> فقط: لمسح بيانات التجربة (الفواتير، الورديات، المصروفات، النوتة، الحجوزات) وتجهيز السيستم للبدء الفعلي على نظافة.</p>
+        </div>
+        <button type="button" class="btn btn-danger" onclick="openResetSystemModal()">🗑️ تصفير السيستم الآن</button>
+      </div>
+    `;
+  }
+}
+
+window.editDashUserForm = (id) => {
+  const u = state.users.find((x) => String(x.id) === String(id));
+  if (!u) return;
+  document.getElementById('dashEditUserId').value = u.id;
+  document.getElementById('dashNewUserName').value = u.name || '';
+  document.getElementById('dashNewUserPin').value = u.pin || '';
+  document.getElementById('dashNewUserRole').value = u.role || 'staff';
+  document.getElementById('btnDashSaveUser').textContent = '💾 حفظ التعديل';
+  document.getElementById('btnDashCancelUser').classList.remove('hidden');
+  document.getElementById('dashNewUserName').focus();
+};
+
+window.resetDashUserForm = () => {
+  const idEl = document.getElementById('dashEditUserId');
+  if (!idEl) return;
+  idEl.value = '';
+  document.getElementById('dashNewUserName').value = '';
+  document.getElementById('dashNewUserPin').value = '';
+  document.getElementById('dashNewUserRole').value = 'staff';
+  document.getElementById('btnDashSaveUser').textContent = '➕ إضافة حساب موظف';
+  document.getElementById('btnDashCancelUser').classList.add('hidden');
+};
+
+window.handleDashSaveUser = async () => {
+  if (!activeUser || activeUser.role !== 'admin') {
+    return showToast('هذه الصلاحية متاحة لحساب Admin فقط!', 'error');
+  }
+  const editId = document.getElementById('dashEditUserId').value;
+  const name = document.getElementById('dashNewUserName').value.trim();
+  const pin = document.getElementById('dashNewUserPin').value.trim();
+  const role = document.getElementById('dashNewUserRole').value;
+  if (!name || !pin) return showToast('أدخل اسم الموظف والباسورد', 'warning');
+
+  if (editId) {
+    const duplicate = state.users.find((u) => String(u.pin) === pin && String(u.id) !== String(editId));
+    if (duplicate) {
+      return showToast(`هذا الباسورد مستخدم بالفعل للموظف "${duplicate.name}"`, 'error');
+    }
+    const target = state.users.find((u) => String(u.id) === String(editId));
+    if (target) {
+      target.name = name;
+      target.pin = pin;
+      target.role = role;
+      await dbMutate('users', 'update', { name, pin, role }, 'id', target.id);
+      if (String(target.id) === String(activeUser.id)) {
+        activeUser = target;
+        sessionStorage.setItem(STORAGE_KEYS.USER, JSON.stringify(target));
+        document.getElementById('currentUserBadge').textContent =
+          `${activeUser.name} (${activeUser.role === 'admin' ? 'مدير Admin' : 'موظف / كاشير'})`;
+      }
+    }
+    resetDashUserForm();
+  } else {
+    const duplicate = state.users.find((u) => String(u.pin) === pin);
+    if (duplicate) {
+      return showToast(`هذا الباسورد مستخدم بالفعل للموظف "${duplicate.name}"`, 'error');
+    }
+    const u = { id: 'usr-' + Date.now(), name, pin, role };
+    state.users.push(u);
+    await dbMutate('users', 'insert', u);
+    resetDashUserForm();
+  }
+
+  populateLoginUserSelect();
+  renderAll();
+  showToast('تم حفظ حساب الموظف والباسورد بنجاح ✅', 'success');
+};
 
 function renderDashboard() {
   if (!isMgmtUnlocked) return;
@@ -903,7 +1080,6 @@ function renderDashboard() {
   document.getElementById('dashActiveTablesCount').textContent = `${openTables.length}/${state.tables.length}`;
   document.getElementById('dashMarketNotah').textContent = `${totalMarketNotah} ج.م`;
 
-  // Filter summary tag
   const summaryTag = document.getElementById('dashFilterSummaryTag');
   if (summaryTag) {
     const parts = [];
@@ -916,7 +1092,6 @@ function renderDashboard() {
     summaryTag.textContent = parts.join(' • ');
   }
 
-  // Analytical Breakdown Table
   const breakdownBody = document.getElementById('dashAnalyticsBreakdownBody');
   if (breakdownBody) {
     const rows = [];
@@ -952,7 +1127,6 @@ function renderDashboard() {
         : rows.join('');
   }
 
-  // Live Rooms & Tables Quick Grid
   const unitsEl = document.getElementById('dashLiveUnitsGrid');
   if (unitsEl) {
     const roomChips = state.rooms.map((r) => {
@@ -990,7 +1164,6 @@ function renderDashboard() {
     unitsEl.innerHTML = [...roomChips, ...tableChips].join('');
   }
 
-  // Top Selling Items
   const topItemsEl = document.getElementById('dashTopItemsList');
   if (topItemsEl) {
     const sortedItems = Object.entries(drinkBreakdown)
@@ -1029,7 +1202,6 @@ function renderDashboard() {
             .join('');
   }
 
-  // Filtered Transactions Table
   const recentBody = document.getElementById('dashRecentTxBody');
   if (recentBody) {
     recentBody.innerHTML =
@@ -1050,9 +1222,189 @@ function renderDashboard() {
             )
             .join('');
   }
+
+  injectAdminDashboardTools();
 }
 
-/* ================= 5B. FIX / CANCEL WRONG BUSINESS DAY ================= */
+/* ================= 5B. ADMIN-ONLY FULL SYSTEM RESET ================= */
+
+function ensureResetModalExists() {
+  if (document.getElementById('modalResetSystem')) return;
+  const modalHtml = `
+    <div id="modalResetSystem" class="modal-backdrop hidden">
+      <div class="modal-card" style="max-width:480px;border:1px solid rgba(239,68,68,0.6);">
+        <div class="modal-header">
+          <h3 style="color:#f87171;">⚠️ تصفير السيستم بالكامل (Reset System)</h3>
+          <button type="button" class="close-btn" onclick="closeModal('modalResetSystem')">✕</button>
+        </div>
+        <div class="modal-body">
+          <p style="font-size:0.9rem;line-height:1.6;margin-bottom:12px;">
+            هذا الإجراء سيمسح <strong>جميع بيانات التجربة</strong> نهائياً (الفواتير، الورديات، المصروفات، حسابات النوتة، والحجوزات) ويُعيد جميع الغرف والترابيزات إلى وضع <strong>متاحة</strong> ليصبح السيستم نظيفاً وجاهزاً للعمل الفعلي.
+          </p>
+
+          <div style="background:rgba(255,255,255,0.04);padding:10px 12px;border-radius:10px;margin-bottom:12px;display:flex;flex-direction:column;gap:8px;font-size:0.86rem;">
+            <label style="display:flex;align-items:center;gap:8px;cursor:pointer;">
+              <input type="checkbox" checked disabled />
+              <span>مسح جميع الفواتير والورديات والمصروفات والحجوزات والنوتة وتصفير الغرف والترابيزات</span>
+            </label>
+            <label style="display:flex;align-items:center;gap:8px;cursor:pointer;">
+              <input type="checkbox" id="resetKeepSingleAdminCheck" checked />
+              <span>إعادة ضبط الحسابات على حساب <strong>Admin واحد فقط بباسورد 1234</strong></span>
+            </label>
+            <label style="display:flex;align-items:center;gap:8px;cursor:pointer;">
+              <input type="checkbox" id="resetFactoryWipeMenuRooms" />
+              <span>مسح الغرف والمنيو أيضاً (تصفير شامل من الصفر)</span>
+            </label>
+          </div>
+
+          <label style="display:block;margin-bottom:6px;font-size:0.85rem;">أدخل باسورد الإدارة للتأكيد:</label>
+          <input type="password" id="resetSystemConfirmPass" class="input-field" placeholder="اكتب باسورد الإدارة (1234)" />
+          <div id="resetSystemError" class="hidden" style="color:#f87171;font-size:0.82rem;margin-top:6px;">باسورد الإدارة غير صحيح!</div>
+        </div>
+        <div class="modal-footer" style="display:flex;gap:8px;justify-content:flex-end;margin-top:14px;">
+          <button type="button" class="btn btn-outline" onclick="closeModal('modalResetSystem')">إلغاء</button>
+          <button type="button" id="btnExecuteResetSystem" class="btn btn-danger" onclick="executeFullSystemReset()">🗑️ تنفيذ التصفير النهائي</button>
+        </div>
+      </div>
+    </div>
+  `;
+  document.body.insertAdjacentHTML('beforeend', modalHtml);
+}
+
+window.openResetSystemModal = () => {
+  if (!activeUser || activeUser.role !== 'admin') {
+    return showToast('هذه الصلاحية متاحة لحساب Admin فقط!', 'error');
+  }
+  ensureResetModalExists();
+  document.getElementById('resetSystemConfirmPass').value = '';
+  document.getElementById('resetSystemError').classList.add('hidden');
+  openModal('modalResetSystem');
+  setTimeout(() => document.getElementById('resetSystemConfirmPass')?.focus(), 100);
+};
+
+async function clearCloudTableAll(tableName, cachedRows = []) {
+  if (!sbClient || !navigator.onLine) return;
+  try {
+    await sbClient.from(tableName).delete().not('id', 'is', null);
+  } catch (_) {}
+  for (const row of cachedRows) {
+    if (row && row.id !== undefined && row.id !== null) {
+      try {
+        await sbClient.from(tableName).delete().eq('id', row.id);
+      } catch (_) {}
+    }
+  }
+}
+
+window.executeFullSystemReset = async () => {
+  if (!activeUser || activeUser.role !== 'admin') {
+    return showToast('هذه الصلاحية متاحة لحساب Admin فقط!', 'error');
+  }
+
+  const entered = (document.getElementById('resetSystemConfirmPass')?.value || '').trim();
+  const adminUser = state.users.find((u) => u.role === 'admin');
+  const validPasswords = [
+    String(state.settings.mgmtPassword || '1234'),
+    adminUser ? String(adminUser.pin) : '1234'
+  ];
+
+  if (!validPasswords.includes(entered)) {
+    document.getElementById('resetSystemError')?.classList.remove('hidden');
+    return;
+  }
+
+  const btn = document.getElementById('btnExecuteResetSystem');
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = '⏳ جاري تصفير السيستم...';
+  }
+
+  const resetUsersToAdminOnly = document.getElementById('resetKeepSingleAdminCheck')?.checked ?? true;
+  const factoryWipeRoomsMenu = document.getElementById('resetFactoryWipeMenuRooms')?.checked ?? false;
+
+  // Clear pending offline queue
+  localStorage.removeItem(STORAGE_KEYS.QUEUE);
+  updateQueueBadge();
+
+  // 1. Delete operational tables from cloud
+  await clearCloudTableAll('transactions', state.transactions);
+  await clearCloudTableAll('expenses', state.expenses);
+  await clearCloudTableAll('shifts', state.shifts);
+  await clearCloudTableAll('reservations', state.reservations);
+  await clearCloudTableAll('clients', state.clients);
+
+  // 2. Clear local operational state
+  state.transactions = [];
+  state.expenses = [];
+  state.shifts = [];
+  state.reservations = [];
+  state.clients = [];
+  state.handovers = [];
+  state.shiftDays = {};
+  directCart = {};
+  roomPosCart = {};
+
+  await saveSystemStateKey('arena_handovers', []);
+  await saveSystemStateKey('arena_shift_days', {});
+
+  // 3. Reset rooms & tables (or wipe if factory wipe checked)
+  if (factoryWipeRoomsMenu) {
+    await clearCloudTableAll('rooms', state.rooms);
+    await clearCloudTableAll('menu_items', state.menuItems);
+    state.rooms = [];
+    state.menuItems = [];
+    state.menuMeta = {};
+    state.tables = [1, 2, 3, 4, 5, 6].map((n) => ({
+      id: `tbl-${n}`,
+      name: `ترابيزة ${n}`,
+      status: 'idle',
+      session: null
+    }));
+    await saveSystemStateKey('arena_menu_meta', {});
+    await saveSystemStateKey('arena_tables', state.tables);
+  } else {
+    for (const r of state.rooms) {
+      r.status = 'idle';
+      r.session = null;
+      await dbMutate('rooms', 'update', { status: 'idle', session: null }, 'id', r.id);
+    }
+    state.tables.forEach((t) => {
+      t.status = 'idle';
+      t.session = null;
+    });
+    await saveSystemStateKey('arena_tables', state.tables);
+  }
+
+  // 4. Reset users to single Admin account (1234) if checked
+  if (resetUsersToAdminOnly) {
+    await clearCloudTableAll('users', state.users);
+    const singleAdmin = { id: 'admin-default', name: 'المدير العام', pin: '1234', role: 'admin' };
+    state.users = [singleAdmin];
+    state.settings.mgmtPassword = '1234';
+    await dbMutate('users', 'upsert', singleAdmin);
+    await saveSystemStateKey('arena_settings', state.settings);
+
+    activeUser = singleAdmin;
+    isMgmtUnlocked = true;
+    sessionStorage.setItem(STORAGE_KEYS.USER, JSON.stringify(singleAdmin));
+    const badgeEl = document.getElementById('currentUserBadge');
+    if (badgeEl) badgeEl.textContent = `${singleAdmin.name} (مدير Admin)`;
+  }
+
+  saveLocalCache();
+  populateLoginUserSelect();
+
+  if (btn) {
+    btn.disabled = false;
+    btn.textContent = '🗑️ تنفيذ التصفير النهائي';
+  }
+
+  closeModal('modalResetSystem');
+  renderAll();
+  showToast('تم تصفير السيستم بالكامل بنجاح! السيستم الآن نظيف وجاهز للشغل ✅', 'success');
+};
+
+/* ================= 5C. FIX / CANCEL WRONG BUSINESS DAY ================= */
 
 async function handleFixWrongBusinessDay() {
   const wrongDay = document.getElementById('dashWrongDaySelect')?.value || '';
@@ -1070,13 +1422,11 @@ async function handleFixWrongBusinessDay() {
   );
   if (!ok) return;
 
-  // Find shifts on wrongDay
   const wrongShifts = state.shifts.filter((s) => getShiftBusinessDate(s) === wrongDay);
   const wrongShiftIds = new Set(wrongShifts.map((s) => String(s.id)));
   const wasOpenShift = wrongShifts.find((s) => s.status === 'open');
   const carriedStartCash = wasOpenShift ? Number(wasOpenShift.start_cash || 0) : 0;
 
-  // Delete transactions of wrongDay
   const txsToDelete = state.transactions.filter(
     (t) => getTxBusinessDate(t) === wrongDay || wrongShiftIds.has(String(t.shift_id))
   );
@@ -1087,7 +1437,6 @@ async function handleFixWrongBusinessDay() {
     await dbMutate('transactions', 'delete', null, 'id', t.id);
   }
 
-  // Delete expenses of wrongDay
   const expsToDelete = state.expenses.filter(
     (e) => getExpBusinessDate(e) === wrongDay || wrongShiftIds.has(String(e.shift_id))
   );
@@ -1098,18 +1447,15 @@ async function handleFixWrongBusinessDay() {
     await dbMutate('expenses', 'delete', null, 'id', e.id);
   }
 
-  // Remove handovers linked to wrong shifts
   state.handovers = state.handovers.filter((h) => !wrongShiftIds.has(String(h.shift_id)));
   await saveSystemStateKey('arena_handovers', state.handovers);
 
-  // Delete wrong shifts
   state.shifts = state.shifts.filter((s) => !wrongShiftIds.has(String(s.id)));
   for (const s of wrongShifts) {
     delete state.shiftDays[String(s.id)];
     await dbMutate('shifts', 'delete', null, 'id', s.id);
   }
 
-  // If keepActiveTimers is false, reset rooms & tables
   if (!keepActiveTimers) {
     for (const r of state.rooms) {
       if (r.status === 'running') {
@@ -1125,7 +1471,6 @@ async function handleFixWrongBusinessDay() {
     await saveSystemStateKey('arena_tables', state.tables);
   }
 
-  // Close any other accidental open shift & open the correct business day shift
   const existingOpen = getOpenShift();
   if (!existingOpen) {
     const newShift = {
@@ -2186,7 +2531,6 @@ async function finalizeCheckoutAndPrint() {
     await dbMutate('transactions', 'insert', tx);
   }
 
-  // Deduct sold items from inventory stock
   if (activeCheckoutData.soldItems && activeCheckoutData.soldItems.length > 0) {
     await deductStockForSoldItems(activeCheckoutData.soldItems);
   }
@@ -2778,12 +3122,11 @@ async function handleAddExpense() {
   showToast('تم خصم المصروف من الدرج ✅', 'success');
 }
 
-// Shift Handover Between Employees
 function openHandoverShiftModal() {
   const shift = getOpenShift();
   if (!shift) return;
   if (state.users.length < 2) {
-    return showToast('أضف حساب موظف آخر أولاً من الإعدادات لتسليمه الوردية!', 'warning');
+    return showToast('أضف حساب موظف آخر أولاً من الداشبورد أو الإعدادات لتسليمه الوردية!', 'warning');
   }
 
   const st = computeShiftStats(shift);
@@ -2799,7 +3142,7 @@ function openHandoverShiftModal() {
   const sel = document.getElementById('handoverTargetUser');
   sel.innerHTML = state.users
     .filter((u) => String(u.id) !== String(activeUser.id))
-    .map((u) => `<option value="${u.id}">${escapeHtml(u.name)} (${u.role === 'admin' ? 'مدير' : 'كاشير'})</option>`)
+    .map((u) => `<option value="${u.id}">${escapeHtml(u.name)} (${u.role === 'admin' ? 'مدير' : 'موظف'})</option>`)
     .join('');
 
   document.getElementById('handoverTargetPin').value = '';
@@ -2871,9 +3214,11 @@ async function confirmHandoverShift() {
   await dbMutate('shifts', 'update', { staff_name: targetUser.name }, 'id', shift.id);
 
   activeUser = targetUser;
+  isMgmtUnlocked = targetUser.role === 'admin';
   sessionStorage.setItem(STORAGE_KEYS.USER, JSON.stringify(targetUser));
   document.getElementById('currentUserBadge').textContent =
-    `${activeUser.name} (${activeUser.role === 'admin' ? 'مدير' : 'كاشير'})`;
+    `${activeUser.name} (${activeUser.role === 'admin' ? 'مدير Admin' : 'موظف / كاشير'})`;
+  updateMgmtLockUI();
 
   lastHandoverReportText = [
     `🤝 *إشعار تسليم وردية - ARENA POS*`,
@@ -3128,7 +3473,7 @@ function renderReports() {
           .join('');
 }
 
-/* ================= 16. SETTINGS: RECEIPT DESIGNER (80mm/58mm), USERS, MENU & INVENTORY ================= */
+/* ================= 16. SETTINGS: RECEIPT DESIGNER, USERS, MENU & INVENTORY ================= */
 
 function renderSettings() {
   if (!isMgmtUnlocked) return;
@@ -3140,24 +3485,28 @@ function renderSettings() {
   document.getElementById('setOwnerWhatsapp').value = state.settings.ownerWhatsapp || '';
   updateReceiptPreview();
 
-  // Users List (with Edit Password/PIN & Delete)
+  const isAdmin = activeUser && activeUser.role === 'admin';
+
   document.getElementById('settingsUsersList').innerHTML = state.users
     .map(
       (u) => `
       <div class="mini-list-item">
         <span>
-          <strong>${escapeHtml(u.name)}</strong> (${u.role === 'admin' ? 'مدير' : 'كاشير'}) — الباسورد/PIN: <code>${escapeHtml(u.pin)}</code>
+          <strong>${escapeHtml(u.name)}</strong> (${u.role === 'admin' ? 'مدير Admin' : 'موظف / كاشير'}) — الباسورد: <code>${escapeHtml(u.pin)}</code>
         </span>
-        <div class="btn-row">
-          <button type="button" class="btn btn-outline btn-xs" onclick="editUserForm('${u.id}')">✏️ تعديل / تغيير باسورد</button>
-          ${u.id !== 'admin-default' ? `<button type="button" class="btn btn-danger btn-xs" onclick="deleteUser('${u.id}')">حذف</button>` : ''}
-        </div>
+        ${
+          isAdmin
+            ? `<div class="btn-row">
+                <button type="button" class="btn btn-outline btn-xs" onclick="editUserForm('${u.id}')">✏️ تعديل / تغيير باسورد</button>
+                ${u.id !== 'admin-default' ? `<button type="button" class="btn btn-danger btn-xs" onclick="deleteUser('${u.id}')">حذف</button>` : ''}
+              </div>`
+            : `<span style="font-size:0.75rem;color:var(--text-muted)">عرض فقط</span>`
+        }
       </div>
     `
     )
     .join('');
 
-  // Rooms List (with Edit & Delete)
   document.getElementById('settingsRoomsList').innerHTML = state.rooms
     .map(
       (r) => `
@@ -3172,7 +3521,6 @@ function renderSettings() {
     )
     .join('');
 
-  // Tables List
   document.getElementById('settingsTablesList').innerHTML = state.tables
     .map(
       (t) => `
@@ -3184,7 +3532,6 @@ function renderSettings() {
     )
     .join('');
 
-  // Games List
   document.getElementById('settingsGamesList').innerHTML = state.games
     .map(
       (g) => `
@@ -3196,8 +3543,33 @@ function renderSettings() {
     )
     .join('');
 
-  // Full Menu & Inventory List
   renderSettingsMenuList();
+
+  // Also show Reset System button inside Settings for Admin
+  const settingsContainer = document.getElementById('settingsUnlockedContent');
+  if (settingsContainer) {
+    let settingsResetCard = document.getElementById('settingsResetSystemCard');
+    if (!isAdmin) {
+      if (settingsResetCard) settingsResetCard.remove();
+    } else if (!settingsResetCard) {
+      settingsResetCard = document.createElement('div');
+      settingsResetCard.id = 'settingsResetSystemCard';
+      settingsResetCard.className = 'card';
+      settingsResetCard.style.marginTop = '16px';
+      settingsResetCard.style.border = '1px solid rgba(239, 68, 68, 0.5)';
+      settingsResetCard.style.background = 'rgba(239, 68, 68, 0.06)';
+      settingsResetCard.innerHTML = `
+        <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px;">
+          <div>
+            <h3 style="margin:0 0 4px 0;color:#f87171;">⚠️ تصفير السيستم بالكامل (Reset System)</h3>
+            <p class="hint-text" style="margin:0;">صلاحية Admin فقط: مسح بيانات التجربة وتجهيز السيستم للعمل الفعلي.</p>
+          </div>
+          <button type="button" class="btn btn-danger" onclick="openResetSystemModal()">🗑️ تصفير السيستم الآن</button>
+        </div>
+      `;
+      settingsContainer.appendChild(settingsResetCard);
+    }
+  }
 }
 
 function renderSettingsMenuList() {
@@ -3546,12 +3918,32 @@ function bindEvents() {
     btn.addEventListener('click', () => switchTab(btn.dataset.tab));
   });
 
-  // Management Password Unlock / Lock
+  // Management Password Unlock / Lock (direct + delegated fallback)
   document.getElementById('btnUnlockMgmt')?.addEventListener('click', verifyMgmtPassword);
   document.getElementById('mgmtPasswordInput')?.addEventListener('keydown', (e) => {
     if (e.key === 'Enter') verifyMgmtPassword();
   });
   document.getElementById('btnLockMgmt')?.addEventListener('click', lockMgmtPanel);
+
+  document.addEventListener('click', (e) => {
+    const gateBtn = e.target.closest(
+      '#dashboardLockedGate button, #reportsLockedGate button, #settingsLockedGate button, #mgmtLockIndicator'
+    );
+    if (gateBtn) {
+      if (gateBtn.id === 'mgmtLockIndicator' && isMgmtUnlocked) {
+        lockMgmtPanel();
+        return;
+      }
+      const activeTab = document.querySelector('.nav-tab.active')?.dataset.tab || 'dashboard';
+      openMgmtAuthModal(activeTab);
+      return;
+    }
+
+    const modalConfirmBtn = e.target.closest('#modalMgmtAuth .btn-primary, #modalMgmtAuth .btn-success');
+    if (modalConfirmBtn && modalConfirmBtn.id !== 'btnUnlockMgmt') {
+      verifyMgmtPassword();
+    }
+  });
 
   // Dashboard Sales Analytics Filters
   document.getElementById('btnApplyDashFilter')?.addEventListener('click', renderDashboard);
@@ -3684,17 +4076,26 @@ function bindEvents() {
     showToast('تم حفظ تصميم الفاتورة بمقاس الريسيت وتطبيقه على كل الأجهزة ✅', 'success');
   });
 
-  // Settings: Management Password
+  // Settings: Management Password (Admin Only)
   document.getElementById('btnSaveMgmtPass')?.addEventListener('click', async () => {
+    if (!activeUser || activeUser.role !== 'admin') {
+      return showToast('تغيير باسورد الإدارة متاح لحساب Admin فقط!', 'error');
+    }
     const p1 = document.getElementById('setMgmtNewPass').value.trim();
     const p2 = document.getElementById('setMgmtConfirmPass').value.trim();
     if (!p1) return showToast('أدخل باسورد الإدارة الجديد', 'warning');
     if (p1 !== p2) return showToast('الباسورد غير متطابق!', 'error');
 
     state.settings.mgmtPassword = p1;
+    const adminAcc = state.users.find((u) => u.role === 'admin');
+    if (adminAcc) {
+      adminAcc.pin = p1;
+      await dbMutate('users', 'update', { pin: p1 }, 'id', adminAcc.id);
+    }
     await saveSystemStateKey('arena_settings', state.settings);
     document.getElementById('setMgmtNewPass').value = '';
     document.getElementById('setMgmtConfirmPass').value = '';
+    renderAll();
     showToast('تم تحديث باسورد الإدارة بنجاح 🔐', 'success');
   });
 
@@ -3709,8 +4110,11 @@ function bindEvents() {
     sendReportToWhatsApp('✅ رسالة تجريبية من سيستم ARENA POS - الربط مع واتساب المدير يعمل بنجاح!');
   });
 
-  // Settings: Users (Add & Edit Password/PIN)
+  // Settings: Users (Admin Only)
   document.getElementById('btnAddUser')?.addEventListener('click', async () => {
+    if (!activeUser || activeUser.role !== 'admin') {
+      return showToast('إدارة حسابات الموظفين متاحة لحساب Admin فقط!', 'error');
+    }
     const editId = document.getElementById('setEditUserId').value;
     const name = document.getElementById('setUserName').value.trim();
     const pin = document.getElementById('setUserPin').value.trim();
@@ -3738,7 +4142,7 @@ function bindEvents() {
     }
 
     populateLoginUserSelect();
-    renderSettings();
+    renderAll();
     showToast('تم حفظ بيانات اليوزر والباسورد ✅', 'success');
   });
   document.getElementById('btnCancelEditUser')?.addEventListener('click', resetUserForm);
@@ -3865,12 +4269,21 @@ function bindEvents() {
   });
 }
 
-// Global Delete Helpers
+// Global Helpers
+window.openMgmtModal = openMgmtAuthModal;
+window.openAdminAuthModal = openMgmtAuthModal;
+window.checkMgmtPassword = verifyMgmtPassword;
+window.unlockMgmtPanel = verifyMgmtPassword;
+
 window.deleteUser = async (id) => {
+  if (!activeUser || activeUser.role !== 'admin') {
+    return showToast('حذف الحسابات متاح لحساب Admin فقط!', 'error');
+  }
   state.users = state.users.filter((u) => String(u.id) !== String(id));
   await dbMutate('users', 'delete', null, 'id', id);
   populateLoginUserSelect();
-  renderSettings();
+  renderAll();
+  showToast('تم حذف حساب الموظف ✅', 'success');
 };
 
 window.deleteRoom = async (id) => {
