@@ -1,7 +1,7 @@
 /* ==========================================================================
-   ARENA POS v4.1 - Complete Operations & Management System
-   Includes: Single Admin (1234) Auto-Unlock, Dashboard Staff Manager,
-   Admin-Only Full System Reset (Cloud + Local), Business Day Shift Locking,
+   ARENA POS v4.3 - Complete Operations & Management System
+   Includes: Strictly Single Admin Account (Admin / 1234), Full Staff CRUD,
+   Synced Admin Password Change, Admin-Only System Reset, Business Day Shift Locking,
    Wrong Day Fixer, Sales Analytics Filters, PS5 Room Cards, Cafe Tables,
    Visual POS Grid + Inventory Tracking, Receipt Designer (80mm/58mm),
    Notah Credit System, Reservations, Shift Handover + WhatsApp Reports
@@ -15,7 +15,8 @@ const STORAGE_KEYS = {
   KEY: 'arena_sb_key',
   CACHE: 'arena_local_db_v4',
   QUEUE: 'arena_offline_queue_v4',
-  USER: 'arena_active_user_v4'
+  USER: 'arena_active_user_v4',
+  SINGLE_ADMIN_MIGRATED: 'arena_single_admin_v43'
 };
 
 let sbClient = null;
@@ -116,6 +117,21 @@ function getExpBusinessDate(exp) {
   return getLocalDateStr(exp.created_at);
 }
 
+function isUserAdmin(user = activeUser) {
+  if (!user) return false;
+  const roleStr = String(user.role || '').trim().toLowerCase();
+  const nameStr = String(user.name || '').trim().toLowerCase();
+  return (
+    roleStr === 'admin' ||
+    String(user.id) === 'admin-default' ||
+    nameStr === 'admin'
+  );
+}
+
+function hasAdminPrivilege() {
+  return isUserAdmin(activeUser) || isMgmtUnlocked === true;
+}
+
 document.addEventListener('DOMContentLoaded', async () => {
   registerServiceWorker();
   setupNetworkListeners();
@@ -145,12 +161,19 @@ document.addEventListener('DOMContentLoaded', async () => {
   initSupabase(sbUrl, sbKey);
   loadLocalCache();
   await syncAllDataFromCloud();
+  await enforceSingleAdminOneTimeCleanup();
 
   const savedUser = sessionStorage.getItem(STORAGE_KEYS.USER);
   if (savedUser) {
     try {
-      activeUser = JSON.parse(savedUser);
-      isMgmtUnlocked = activeUser.role === 'admin';
+      const parsedUser = JSON.parse(savedUser);
+      const matched =
+        state.users.find((u) => String(u.id) === String(parsedUser.id)) ||
+        state.users.find((u) => isUserAdmin(u)) ||
+        parsedUser;
+      activeUser = matched;
+      isMgmtUnlocked = isUserAdmin(activeUser);
+      sessionStorage.setItem(STORAGE_KEYS.USER, JSON.stringify(activeUser));
       enterMainApp();
       return;
     } catch (_) {}
@@ -225,10 +248,22 @@ function loadLocalCache() {
 }
 
 function ensureDefaultsIfEmpty() {
-  // Single Admin Account with password 1234
-  if (!state.users || state.users.length === 0) {
-    state.users = [{ id: 'admin-default', name: 'المدير العام', pin: '1234', role: 'admin' }];
+  const adminPass = String(state.settings.mgmtPassword || '1234');
+  if (!Array.isArray(state.users) || state.users.length === 0) {
+    state.users = [{ id: 'admin-default', name: 'Admin', pin: adminPass, role: 'admin' }];
+  } else {
+    let adminAcc = state.users.find((u) => isUserAdmin(u));
+    if (!adminAcc) {
+      adminAcc = { id: 'admin-default', name: 'Admin', pin: adminPass, role: 'admin' };
+      state.users.unshift(adminAcc);
+    } else {
+      adminAcc.role = 'admin';
+      if (state.settings.mgmtPassword) {
+        adminAcc.pin = String(state.settings.mgmtPassword);
+      }
+    }
   }
+
   if (!state.games || state.games.length === 0) {
     state.games = [
       { id: 'g1', name: 'FC 26' },
@@ -248,6 +283,44 @@ function ensureDefaultsIfEmpty() {
   if (!state.settings.mgmtPassword) {
     state.settings.mgmtPassword = '1234';
   }
+}
+
+async function purgeCloudUsersTable() {
+  if (!sbClient || !navigator.onLine) return;
+  try {
+    const { data } = await sbClient.from('users').select('id');
+    if (Array.isArray(data)) {
+      for (const row of data) {
+        if (row && row.id !== undefined && row.id !== null) {
+          await sbClient.from('users').delete().eq('id', row.id);
+        }
+      }
+    }
+  } catch (_) {}
+}
+
+async function enforceSingleAdminOneTimeCleanup() {
+  if (localStorage.getItem(STORAGE_KEYS.SINGLE_ADMIN_MIGRATED) === '1') return;
+
+  await purgeCloudUsersTable();
+
+  const singleAdmin = { id: 'admin-default', name: 'Admin', pin: '1234', role: 'admin' };
+  state.users = [singleAdmin];
+  state.settings.mgmtPassword = '1234';
+
+  await saveSystemStateKey('arena_users', state.users);
+  await saveSystemStateKey('arena_settings', state.settings);
+  await dbMutate('users', 'upsert', singleAdmin);
+
+  if (activeUser) {
+    activeUser = singleAdmin;
+    isMgmtUnlocked = true;
+    sessionStorage.setItem(STORAGE_KEYS.USER, JSON.stringify(singleAdmin));
+  }
+
+  saveLocalCache();
+  populateLoginUserSelect();
+  localStorage.setItem(STORAGE_KEYS.SINGLE_ADMIN_MIGRATED, '1');
 }
 
 function getOfflineQueue() {
@@ -368,6 +441,8 @@ async function syncAllDataFromCloud() {
       sbClient.from('system_state').select('*')
     ]);
 
+    let hasCloudUsersKey = false;
+
     if (sysRes.data && sysRes.data.length > 0) {
       const sample = sysRes.data[0];
       if ('key' in sample && 'value' in sample) {
@@ -378,6 +453,14 @@ async function syncAllDataFromCloud() {
       const cfgRow = sysRes.data.find((r) => r[sysStateSchema.idCol] === 'arena_settings');
       if (cfgRow && cfgRow[sysStateSchema.valCol]) {
         state.settings = { ...state.settings, ...cfgRow[sysStateSchema.valCol] };
+      }
+      const usersRow = sysRes.data.find((r) => r[sysStateSchema.idCol] === 'arena_users');
+      if (usersRow && Array.isArray(usersRow[sysStateSchema.valCol]) && usersRow[sysStateSchema.valCol].length > 0) {
+        hasCloudUsersKey = true;
+        state.users = usersRow[sysStateSchema.valCol].map((u) => ({
+          ...u,
+          role: isUserAdmin(u) ? 'admin' : 'staff'
+        }));
       }
       const tblRow = sysRes.data.find((r) => r[sysStateSchema.idCol] === 'arena_tables');
       if (tblRow && Array.isArray(tblRow[sysStateSchema.valCol]) && tblRow[sysStateSchema.valCol].length > 0) {
@@ -394,6 +477,24 @@ async function syncAllDataFromCloud() {
       const shiftDaysRow = sysRes.data.find((r) => r[sysStateSchema.idCol] === 'arena_shift_days');
       if (shiftDaysRow && shiftDaysRow[sysStateSchema.valCol] && typeof shiftDaysRow[sysStateSchema.valCol] === 'object') {
         state.shiftDays = shiftDaysRow[sysStateSchema.valCol];
+      }
+    }
+
+    if (!hasCloudUsersKey) {
+      if (usersRes.data && usersRes.data.length > 0) {
+        state.users = usersRes.data.map((u) => ({
+          ...u,
+          role: isUserAdmin(u) ? 'admin' : 'staff'
+        }));
+      } else {
+        state.users = [
+          {
+            id: 'admin-default',
+            name: 'Admin',
+            pin: String(state.settings.mgmtPassword || '1234'),
+            role: 'admin'
+          }
+        ];
       }
     }
 
@@ -417,12 +518,6 @@ async function syncAllDataFromCloud() {
           unit: m.unit || meta.unit || 'قطعة'
         };
       });
-    }
-    if (usersRes.data && usersRes.data.length > 0) {
-      state.users = usersRes.data;
-    } else {
-      state.users = [{ id: 'admin-default', name: 'المدير العام', pin: '1234', role: 'admin' }];
-      await dbMutate('users', 'upsert', state.users[0]);
     }
     if (clientsRes.data) {
       state.clients = clientsRes.data.map((c) => ({
@@ -496,7 +591,59 @@ async function saveSystemStateKey(keyName, valueObj) {
   await dbMutate('system_state', 'upsert', payload, sysStateSchema.idCol, keyName);
 }
 
-/* ================= 4. AUTH, MANAGEMENT PASSWORD LOCK & NAVIGATION ================= */
+async function persistUsersEverywhere() {
+  saveLocalCache();
+  await saveSystemStateKey('arena_users', state.users);
+}
+
+/* ================= 4. AUTH, ADMIN PASSWORD SYNC & NAVIGATION ================= */
+
+async function updateAdminPasswordEverywhere(newPass, newName = null) {
+  const cleanPass = String(newPass || '').trim();
+  if (!cleanPass) return false;
+
+  const staffCollision = state.users.find(
+    (u) => !isUserAdmin(u) && String(u.pin) === cleanPass
+  );
+  if (staffCollision) {
+    showToast(`هذا الباسورد مستخدم بالفعل للموظف "${staffCollision.name}" — اختر باسورد مختلف`, 'error');
+    return false;
+  }
+
+  state.settings.mgmtPassword = cleanPass;
+
+  let adminAcc = state.users.find((u) => isUserAdmin(u));
+  if (!adminAcc) {
+    adminAcc = { id: 'admin-default', name: newName || 'Admin', pin: cleanPass, role: 'admin' };
+    state.users.unshift(adminAcc);
+  } else {
+    adminAcc.pin = cleanPass;
+    adminAcc.role = 'admin';
+    if (newName) adminAcc.name = newName;
+  }
+
+  await persistUsersEverywhere();
+  await saveSystemStateKey('arena_settings', state.settings);
+  await dbMutate(
+    'users',
+    'upsert',
+    { id: adminAcc.id, name: adminAcc.name, pin: adminAcc.pin, role: 'admin' },
+    'id',
+    adminAcc.id
+  );
+
+  if (activeUser && (isUserAdmin(activeUser) || isMgmtUnlocked)) {
+    activeUser = { ...adminAcc, role: 'admin' };
+    isMgmtUnlocked = true;
+    sessionStorage.setItem(STORAGE_KEYS.USER, JSON.stringify(activeUser));
+    const badgeEl = document.getElementById('currentUserBadge');
+    if (badgeEl) badgeEl.textContent = `${activeUser.name} (مدير Admin)`;
+  }
+
+  saveLocalCache();
+  populateLoginUserSelect();
+  return true;
+}
 
 function populateLoginUserSelect() {
   const sel = document.getElementById('loginUserSelect');
@@ -507,10 +654,12 @@ function populateLoginUserSelect() {
     state.users
       .map(
         (u) =>
-          `<option value="${u.id}">${escapeHtml(u.name)} (${u.role === 'admin' ? 'مدير Admin' : 'موظف / كاشير'})</option>`
+          `<option value="${u.id}">${escapeHtml(u.name)} (${isUserAdmin(u) ? 'مدير Admin' : 'موظف / كاشير'})</option>`
       )
       .join('');
-  if (currentVal) sel.value = currentVal;
+  if (currentVal && [...sel.options].some((o) => o.value === currentVal)) {
+    sel.value = currentVal;
+  }
 }
 
 function showScreen(screenId) {
@@ -530,7 +679,9 @@ function handleLogin() {
   if (selectedUserId) {
     found = state.users.find((u) => String(u.id) === String(selectedUserId) && String(u.pin) === pin);
   } else {
-    found = state.users.find((u) => String(u.pin) === pin);
+    found =
+      state.users.find((u) => isUserAdmin(u) && (String(u.pin) === pin || String(state.settings.mgmtPassword) === pin)) ||
+      state.users.find((u) => String(u.pin) === pin);
   }
 
   if (!found) {
@@ -542,8 +693,7 @@ function handleLogin() {
   if (errEl) errEl.classList.add('hidden');
   pinInput.value = '';
   activeUser = found;
-  // Admin account unlocks management pages immediately; staff accounts keep them locked
-  isMgmtUnlocked = found.role === 'admin';
+  isMgmtUnlocked = isUserAdmin(found);
   sessionStorage.setItem(STORAGE_KEYS.USER, JSON.stringify(found));
   enterMainApp();
 }
@@ -552,7 +702,7 @@ function enterMainApp() {
   showScreen('mainApp');
   const badgeEl = document.getElementById('currentUserBadge');
   if (badgeEl) {
-    badgeEl.textContent = `${activeUser.name} (${activeUser.role === 'admin' ? 'مدير Admin' : 'موظف / كاشير'})`;
+    badgeEl.textContent = `${activeUser.name} (${isUserAdmin(activeUser) ? 'مدير Admin' : 'موظف / كاشير'})`;
   }
 
   updateMgmtLockUI();
@@ -617,7 +767,7 @@ function openMgmtAuthModal(targetTab = 'dashboard') {
 
 function verifyMgmtPassword() {
   const entered = (document.getElementById('mgmtPasswordInput')?.value || '').trim();
-  const adminUser = state.users.find((u) => u.role === 'admin');
+  const adminUser = state.users.find((u) => isUserAdmin(u));
   const validPasswords = [
     String(state.settings.mgmtPassword || '1234'),
     adminUser ? String(adminUser.pin) : '1234'
@@ -804,11 +954,11 @@ function injectAdminDashboardTools() {
   const dashContainer = document.getElementById('dashboardUnlockedContent');
   if (!dashContainer) return;
 
-  const isAdmin = activeUser && activeUser.role === 'admin';
+  const canManage = hasAdminPrivilege();
 
-  // 1. Staff Accounts Manager inside Dashboard (Admin Only)
+  // 1. Staff Accounts Manager inside Dashboard
   let staffCard = document.getElementById('dashStaffManagerCard');
-  if (!isAdmin) {
+  if (!canManage) {
     if (staffCard) staffCard.remove();
   } else {
     if (!staffCard) {
@@ -822,54 +972,53 @@ function injectAdminDashboardTools() {
 
     staffCard.innerHTML = `
       <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:10px;">
-        <h3 style="margin:0;">👥 إدارة حسابات الموظفين والباسوردات (صلاحية Admin)</h3>
-        <span class="badge badge-upcoming">الحسابات المسجلة: ${state.users.length}</span>
+        <h3 style="margin:0;">👥 إدارة الحسابات والباسوردات</h3>
+        <span class="badge badge-upcoming">إجمالي الحسابات: ${state.users.length}</span>
       </div>
-      <p class="hint-text" style="margin-bottom:10px;">أنشئ حساب لكل موظف بالاسم والباسورد الخاص به. حسابات الموظفين تفتح شاشات التشغيل فقط وتظل صفحات الإدارة مقفولة عليهم.</p>
-      <div class="form-row" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:8px;margin-bottom:12px;">
+      <p class="hint-text" style="margin-bottom:10px;">
+        حساب <strong>Admin</strong> الرئيسي موجود هنا، وتقدر من هنا تنشئ أي حساب موظف جديد، أو <strong>تعدّل اسم أو باسورد أي حساب (بما فيهم Admin)</strong>، أو <strong>تحذف</strong> أي حساب.
+      </p>
+      <div class="form-row" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:8px;margin-bottom:12px;">
         <input type="hidden" id="dashEditUserId" value="" />
-        <input type="text" id="dashNewUserName" class="input-field" placeholder="اسم الموظف (مثلاً: أحمد)" />
+        <input type="text" id="dashNewUserName" class="input-field" placeholder="اسم الحساب / الموظف" />
         <input type="text" id="dashNewUserPin" class="input-field" placeholder="باسورد الدخول (مثلاً: 2222)" />
-        <select id="dashNewUserRole" class="input-field">
-          <option value="staff">موظف / كاشير (تشغيل فقط)</option>
-          <option value="admin">مدير (Admin كامل الصلاحيات)</option>
-        </select>
         <div class="btn-row">
-          <button type="button" id="btnDashSaveUser" class="btn btn-primary" onclick="handleDashSaveUser()">➕ إضافة حساب موظف</button>
+          <button type="button" id="btnDashSaveUser" class="btn btn-primary" onclick="handleDashSaveUser()">➕ إنشاء حساب جديد</button>
           <button type="button" id="btnDashCancelUser" class="btn btn-outline hidden" onclick="resetDashUserForm()">إلغاء</button>
         </div>
       </div>
       <div id="dashUsersList">
         ${state.users
-          .map(
-            (u) => `
-          <div class="mini-list-item">
-            <span>
-              <strong>${escapeHtml(u.name)}</strong>
-              <span class="badge ${u.role === 'admin' ? 'badge-upcoming' : 'badge-completed'}" style="margin-right:6px;">
-                ${u.role === 'admin' ? 'مدير Admin' : 'موظف / كاشير'}
-              </span>
-              — الباسورد: <code>${escapeHtml(u.pin)}</code>
-            </span>
-            <div class="btn-row">
-              <button type="button" class="btn btn-outline btn-xs" onclick="editDashUserForm('${u.id}')">✏️ تعديل / تغيير باسورد</button>
-              ${
-                u.id !== 'admin-default'
-                  ? `<button type="button" class="btn btn-danger btn-xs" onclick="deleteUser('${u.id}')">حذف</button>`
-                  : `<span style="font-size:0.75rem;color:var(--text-muted)">الحساب الرئيسي</span>`
-              }
-            </div>
-          </div>
-        `
-          )
+          .map((u) => {
+            const isAdm = isUserAdmin(u);
+            return `
+              <div class="mini-list-item">
+                <span>
+                  <strong>${escapeHtml(u.name)}</strong>
+                  <span class="badge ${isAdm ? 'badge-upcoming' : 'badge-completed'}" style="margin-right:6px;">
+                    ${isAdm ? 'مدير Admin (الرئيسي)' : 'موظف / كاشير'}
+                  </span>
+                  — الباسورد: <code>${escapeHtml(u.pin)}</code>
+                </span>
+                <div class="btn-row">
+                  <button type="button" class="btn btn-outline btn-xs" onclick="editDashUserForm('${u.id}')">✏️ تعديل / تغيير الباسورد</button>
+                  ${
+                    !isAdm
+                      ? `<button type="button" class="btn btn-danger btn-xs" onclick="deleteUser('${u.id}')">🗑️ حذف</button>`
+                      : ''
+                  }
+                </div>
+              </div>
+            `;
+          })
           .join('')}
       </div>
     `;
   }
 
-  // 2. Full System Reset Card (Strictly Admin Only)
+  // 2. Full System Reset Card (Admin Only)
   let resetCard = document.getElementById('dashResetSystemCard');
-  if (!isAdmin) {
+  if (!canManage) {
     if (resetCard) resetCard.remove();
   } else {
     if (!resetCard) {
@@ -900,8 +1049,9 @@ window.editDashUserForm = (id) => {
   document.getElementById('dashEditUserId').value = u.id;
   document.getElementById('dashNewUserName').value = u.name || '';
   document.getElementById('dashNewUserPin').value = u.pin || '';
-  document.getElementById('dashNewUserRole').value = u.role || 'staff';
-  document.getElementById('btnDashSaveUser').textContent = '💾 حفظ التعديل';
+  document.getElementById('btnDashSaveUser').textContent = isUserAdmin(u)
+    ? '💾 حفظ تعديل حساب Admin'
+    : '💾 حفظ تعديل الحساب';
   document.getElementById('btnDashCancelUser').classList.remove('hidden');
   document.getElementById('dashNewUserName').focus();
 };
@@ -912,54 +1062,57 @@ window.resetDashUserForm = () => {
   idEl.value = '';
   document.getElementById('dashNewUserName').value = '';
   document.getElementById('dashNewUserPin').value = '';
-  document.getElementById('dashNewUserRole').value = 'staff';
-  document.getElementById('btnDashSaveUser').textContent = '➕ إضافة حساب موظف';
+  document.getElementById('btnDashSaveUser').textContent = '➕ إنشاء حساب جديد';
   document.getElementById('btnDashCancelUser').classList.add('hidden');
 };
 
 window.handleDashSaveUser = async () => {
-  if (!activeUser || activeUser.role !== 'admin') {
+  if (!hasAdminPrivilege()) {
     return showToast('هذه الصلاحية متاحة لحساب Admin فقط!', 'error');
   }
   const editId = document.getElementById('dashEditUserId').value;
   const name = document.getElementById('dashNewUserName').value.trim();
   const pin = document.getElementById('dashNewUserPin').value.trim();
-  const role = document.getElementById('dashNewUserRole').value;
-  if (!name || !pin) return showToast('أدخل اسم الموظف والباسورد', 'warning');
+  if (!name || !pin) return showToast('أدخل الاسم والباسورد', 'warning');
 
   if (editId) {
+    const target = state.users.find((u) => String(u.id) === String(editId));
+    if (!target) return;
+
+    if (isUserAdmin(target)) {
+      const ok = await updateAdminPasswordEverywhere(pin, name);
+      if (!ok) return;
+      resetDashUserForm();
+      renderAll();
+      showToast('تم تحديث اسم وباسورد Admin بنجاح 🔐', 'success');
+      return;
+    }
+
     const duplicate = state.users.find((u) => String(u.pin) === pin && String(u.id) !== String(editId));
     if (duplicate) {
-      return showToast(`هذا الباسورد مستخدم بالفعل للموظف "${duplicate.name}"`, 'error');
+      return showToast(`هذا الباسورد مستخدم بالفعل لحساب "${duplicate.name}"`, 'error');
     }
-    const target = state.users.find((u) => String(u.id) === String(editId));
-    if (target) {
-      target.name = name;
-      target.pin = pin;
-      target.role = role;
-      await dbMutate('users', 'update', { name, pin, role }, 'id', target.id);
-      if (String(target.id) === String(activeUser.id)) {
-        activeUser = target;
-        sessionStorage.setItem(STORAGE_KEYS.USER, JSON.stringify(target));
-        document.getElementById('currentUserBadge').textContent =
-          `${activeUser.name} (${activeUser.role === 'admin' ? 'مدير Admin' : 'موظف / كاشير'})`;
-      }
-    }
+    target.name = name;
+    target.pin = pin;
+    target.role = 'staff';
+    await persistUsersEverywhere();
+    await dbMutate('users', 'update', { name, pin, role: 'staff' }, 'id', target.id);
     resetDashUserForm();
   } else {
     const duplicate = state.users.find((u) => String(u.pin) === pin);
     if (duplicate) {
-      return showToast(`هذا الباسورد مستخدم بالفعل للموظف "${duplicate.name}"`, 'error');
+      return showToast(`هذا الباسورد مستخدم بالفعل لحساب "${duplicate.name}"`, 'error');
     }
-    const u = { id: 'usr-' + Date.now(), name, pin, role };
+    const u = { id: 'usr-' + Date.now(), name, pin, role: 'staff' };
     state.users.push(u);
+    await persistUsersEverywhere();
     await dbMutate('users', 'insert', u);
     resetDashUserForm();
   }
 
   populateLoginUserSelect();
   renderAll();
-  showToast('تم حفظ حساب الموظف والباسورد بنجاح ✅', 'success');
+  showToast('تم حفظ بيانات الحساب بنجاح ✅', 'success');
 };
 
 function renderDashboard() {
@@ -1258,7 +1411,7 @@ function ensureResetModalExists() {
           </div>
 
           <label style="display:block;margin-bottom:6px;font-size:0.85rem;">أدخل باسورد الإدارة للتأكيد:</label>
-          <input type="password" id="resetSystemConfirmPass" class="input-field" placeholder="اكتب باسورد الإدارة (1234)" />
+          <input type="password" id="resetSystemConfirmPass" class="input-field" placeholder="اكتب باسورد الإدارة الحالي" />
           <div id="resetSystemError" class="hidden" style="color:#f87171;font-size:0.82rem;margin-top:6px;">باسورد الإدارة غير صحيح!</div>
         </div>
         <div class="modal-footer" style="display:flex;gap:8px;justify-content:flex-end;margin-top:14px;">
@@ -1272,7 +1425,7 @@ function ensureResetModalExists() {
 }
 
 window.openResetSystemModal = () => {
-  if (!activeUser || activeUser.role !== 'admin') {
+  if (!hasAdminPrivilege()) {
     return showToast('هذه الصلاحية متاحة لحساب Admin فقط!', 'error');
   }
   ensureResetModalExists();
@@ -1285,7 +1438,14 @@ window.openResetSystemModal = () => {
 async function clearCloudTableAll(tableName, cachedRows = []) {
   if (!sbClient || !navigator.onLine) return;
   try {
-    await sbClient.from(tableName).delete().not('id', 'is', null);
+    const { data } = await sbClient.from(tableName).select('id');
+    if (Array.isArray(data)) {
+      for (const row of data) {
+        if (row && row.id !== undefined && row.id !== null) {
+          await sbClient.from(tableName).delete().eq('id', row.id);
+        }
+      }
+    }
   } catch (_) {}
   for (const row of cachedRows) {
     if (row && row.id !== undefined && row.id !== null) {
@@ -1297,12 +1457,12 @@ async function clearCloudTableAll(tableName, cachedRows = []) {
 }
 
 window.executeFullSystemReset = async () => {
-  if (!activeUser || activeUser.role !== 'admin') {
+  if (!hasAdminPrivilege()) {
     return showToast('هذه الصلاحية متاحة لحساب Admin فقط!', 'error');
   }
 
   const entered = (document.getElementById('resetSystemConfirmPass')?.value || '').trim();
-  const adminUser = state.users.find((u) => u.role === 'admin');
+  const adminUser = state.users.find((u) => isUserAdmin(u));
   const validPasswords = [
     String(state.settings.mgmtPassword || '1234'),
     adminUser ? String(adminUser.pin) : '1234'
@@ -1322,18 +1482,15 @@ window.executeFullSystemReset = async () => {
   const resetUsersToAdminOnly = document.getElementById('resetKeepSingleAdminCheck')?.checked ?? true;
   const factoryWipeRoomsMenu = document.getElementById('resetFactoryWipeMenuRooms')?.checked ?? false;
 
-  // Clear pending offline queue
   localStorage.removeItem(STORAGE_KEYS.QUEUE);
   updateQueueBadge();
 
-  // 1. Delete operational tables from cloud
   await clearCloudTableAll('transactions', state.transactions);
   await clearCloudTableAll('expenses', state.expenses);
   await clearCloudTableAll('shifts', state.shifts);
   await clearCloudTableAll('reservations', state.reservations);
   await clearCloudTableAll('clients', state.clients);
 
-  // 2. Clear local operational state
   state.transactions = [];
   state.expenses = [];
   state.shifts = [];
@@ -1347,7 +1504,6 @@ window.executeFullSystemReset = async () => {
   await saveSystemStateKey('arena_handovers', []);
   await saveSystemStateKey('arena_shift_days', {});
 
-  // 3. Reset rooms & tables (or wipe if factory wipe checked)
   if (factoryWipeRoomsMenu) {
     await clearCloudTableAll('rooms', state.rooms);
     await clearCloudTableAll('menu_items', state.menuItems);
@@ -1375,14 +1531,14 @@ window.executeFullSystemReset = async () => {
     await saveSystemStateKey('arena_tables', state.tables);
   }
 
-  // 4. Reset users to single Admin account (1234) if checked
   if (resetUsersToAdminOnly) {
-    await clearCloudTableAll('users', state.users);
-    const singleAdmin = { id: 'admin-default', name: 'المدير العام', pin: '1234', role: 'admin' };
+    await purgeCloudUsersTable();
+    const singleAdmin = { id: 'admin-default', name: 'Admin', pin: '1234', role: 'admin' };
     state.users = [singleAdmin];
     state.settings.mgmtPassword = '1234';
-    await dbMutate('users', 'upsert', singleAdmin);
+    await persistUsersEverywhere();
     await saveSystemStateKey('arena_settings', state.settings);
+    await dbMutate('users', 'upsert', singleAdmin);
 
     activeUser = singleAdmin;
     isMgmtUnlocked = true;
@@ -3142,7 +3298,7 @@ function openHandoverShiftModal() {
   const sel = document.getElementById('handoverTargetUser');
   sel.innerHTML = state.users
     .filter((u) => String(u.id) !== String(activeUser.id))
-    .map((u) => `<option value="${u.id}">${escapeHtml(u.name)} (${u.role === 'admin' ? 'مدير' : 'موظف'})</option>`)
+    .map((u) => `<option value="${u.id}">${escapeHtml(u.name)} (${isUserAdmin(u) ? 'مدير Admin' : 'موظف'})</option>`)
     .join('');
 
   document.getElementById('handoverTargetPin').value = '';
@@ -3214,10 +3370,10 @@ async function confirmHandoverShift() {
   await dbMutate('shifts', 'update', { staff_name: targetUser.name }, 'id', shift.id);
 
   activeUser = targetUser;
-  isMgmtUnlocked = targetUser.role === 'admin';
+  isMgmtUnlocked = isUserAdmin(targetUser);
   sessionStorage.setItem(STORAGE_KEYS.USER, JSON.stringify(targetUser));
   document.getElementById('currentUserBadge').textContent =
-    `${activeUser.name} (${activeUser.role === 'admin' ? 'مدير Admin' : 'موظف / كاشير'})`;
+    `${activeUser.name} (${isUserAdmin(activeUser) ? 'مدير Admin' : 'موظف / كاشير'})`;
   updateMgmtLockUI();
 
   lastHandoverReportText = [
@@ -3485,26 +3641,27 @@ function renderSettings() {
   document.getElementById('setOwnerWhatsapp').value = state.settings.ownerWhatsapp || '';
   updateReceiptPreview();
 
-  const isAdmin = activeUser && activeUser.role === 'admin';
+  const canManage = hasAdminPrivilege();
 
   document.getElementById('settingsUsersList').innerHTML = state.users
-    .map(
-      (u) => `
-      <div class="mini-list-item">
-        <span>
-          <strong>${escapeHtml(u.name)}</strong> (${u.role === 'admin' ? 'مدير Admin' : 'موظف / كاشير'}) — الباسورد: <code>${escapeHtml(u.pin)}</code>
-        </span>
-        ${
-          isAdmin
-            ? `<div class="btn-row">
-                <button type="button" class="btn btn-outline btn-xs" onclick="editUserForm('${u.id}')">✏️ تعديل / تغيير باسورد</button>
-                ${u.id !== 'admin-default' ? `<button type="button" class="btn btn-danger btn-xs" onclick="deleteUser('${u.id}')">حذف</button>` : ''}
-              </div>`
-            : `<span style="font-size:0.75rem;color:var(--text-muted)">عرض فقط</span>`
-        }
-      </div>
-    `
-    )
+    .map((u) => {
+      const isAdm = isUserAdmin(u);
+      return `
+        <div class="mini-list-item">
+          <span>
+            <strong>${escapeHtml(u.name)}</strong> (${isAdm ? 'مدير Admin الرئيسي' : 'موظف / كاشير'}) — الباسورد: <code>${escapeHtml(u.pin)}</code>
+          </span>
+          ${
+            canManage
+              ? `<div class="btn-row">
+                  <button type="button" class="btn btn-outline btn-xs" onclick="editUserForm('${u.id}')">✏️ تعديل / تغيير باسورد</button>
+                  ${!isAdm ? `<button type="button" class="btn btn-danger btn-xs" onclick="deleteUser('${u.id}')">🗑️ حذف</button>` : ''}
+                </div>`
+              : `<span style="font-size:0.75rem;color:var(--text-muted)">عرض فقط</span>`
+          }
+        </div>
+      `;
+    })
     .join('');
 
   document.getElementById('settingsRoomsList').innerHTML = state.rooms
@@ -3545,11 +3702,10 @@ function renderSettings() {
 
   renderSettingsMenuList();
 
-  // Also show Reset System button inside Settings for Admin
   const settingsContainer = document.getElementById('settingsUnlockedContent');
   if (settingsContainer) {
     let settingsResetCard = document.getElementById('settingsResetSystemCard');
-    if (!isAdmin) {
+    if (!canManage) {
       if (settingsResetCard) settingsResetCard.remove();
     } else if (!settingsResetCard) {
       settingsResetCard = document.createElement('div');
@@ -3679,8 +3835,12 @@ window.editUserForm = (id) => {
   document.getElementById('setEditUserId').value = u.id;
   document.getElementById('setUserName').value = u.name || '';
   document.getElementById('setUserPin').value = u.pin || '';
-  document.getElementById('setUserRole').value = u.role || 'staff';
-  document.getElementById('btnAddUser').textContent = '💾 حفظ تعديل اليوزر';
+  const roleSel = document.getElementById('setUserRole');
+  if (roleSel) {
+    roleSel.value = isUserAdmin(u) ? 'admin' : 'staff';
+    roleSel.disabled = isUserAdmin(u);
+  }
+  document.getElementById('btnAddUser').textContent = '💾 حفظ تعديل الحساب';
   document.getElementById('btnCancelEditUser').classList.remove('hidden');
   document.getElementById('setUserName').focus();
 };
@@ -3689,8 +3849,12 @@ function resetUserForm() {
   document.getElementById('setEditUserId').value = '';
   document.getElementById('setUserName').value = '';
   document.getElementById('setUserPin').value = '';
-  document.getElementById('setUserRole').value = 'staff';
-  document.getElementById('btnAddUser').textContent = '➕ إضافة يوزر جديد';
+  const roleSel = document.getElementById('setUserRole');
+  if (roleSel) {
+    roleSel.value = 'staff';
+    roleSel.disabled = false;
+  }
+  document.getElementById('btnAddUser').textContent = '➕ إضافة موظف جديد';
   document.getElementById('btnCancelEditUser').classList.add('hidden');
 }
 
@@ -3918,7 +4082,7 @@ function bindEvents() {
     btn.addEventListener('click', () => switchTab(btn.dataset.tab));
   });
 
-  // Management Password Unlock / Lock (direct + delegated fallback)
+  // Management Password Unlock / Lock
   document.getElementById('btnUnlockMgmt')?.addEventListener('click', verifyMgmtPassword);
   document.getElementById('mgmtPasswordInput')?.addEventListener('keydown', (e) => {
     if (e.key === 'Enter') verifyMgmtPassword();
@@ -4076,27 +4240,23 @@ function bindEvents() {
     showToast('تم حفظ تصميم الفاتورة بمقاس الريسيت وتطبيقه على كل الأجهزة ✅', 'success');
   });
 
-  // Settings: Management Password (Admin Only)
+  // Settings: Admin Password Change (Synced across Login + Mgmt Lock + Cloud)
   document.getElementById('btnSaveMgmtPass')?.addEventListener('click', async () => {
-    if (!activeUser || activeUser.role !== 'admin') {
+    if (!hasAdminPrivilege()) {
       return showToast('تغيير باسورد الإدارة متاح لحساب Admin فقط!', 'error');
     }
     const p1 = document.getElementById('setMgmtNewPass').value.trim();
     const p2 = document.getElementById('setMgmtConfirmPass').value.trim();
-    if (!p1) return showToast('أدخل باسورد الإدارة الجديد', 'warning');
+    if (!p1) return showToast('أدخل باسورد Admin الجديد', 'warning');
     if (p1 !== p2) return showToast('الباسورد غير متطابق!', 'error');
 
-    state.settings.mgmtPassword = p1;
-    const adminAcc = state.users.find((u) => u.role === 'admin');
-    if (adminAcc) {
-      adminAcc.pin = p1;
-      await dbMutate('users', 'update', { pin: p1 }, 'id', adminAcc.id);
-    }
-    await saveSystemStateKey('arena_settings', state.settings);
+    const ok = await updateAdminPasswordEverywhere(p1);
+    if (!ok) return;
+
     document.getElementById('setMgmtNewPass').value = '';
     document.getElementById('setMgmtConfirmPass').value = '';
     renderAll();
-    showToast('تم تحديث باسورد الإدارة بنجاح 🔐', 'success');
+    showToast('تم تغيير باسورد حساب Admin وقفل الإدارة بنجاح 🔐', 'success');
   });
 
   // Settings: WhatsApp
@@ -4110,40 +4270,54 @@ function bindEvents() {
     sendReportToWhatsApp('✅ رسالة تجريبية من سيستم ARENA POS - الربط مع واتساب المدير يعمل بنجاح!');
   });
 
-  // Settings: Users (Admin Only)
+  // Settings: Users (Create Staff + Edit Any Account)
   document.getElementById('btnAddUser')?.addEventListener('click', async () => {
-    if (!activeUser || activeUser.role !== 'admin') {
-      return showToast('إدارة حسابات الموظفين متاحة لحساب Admin فقط!', 'error');
+    if (!hasAdminPrivilege()) {
+      return showToast('إدارة الحسابات متاحة لحساب Admin فقط!', 'error');
     }
     const editId = document.getElementById('setEditUserId').value;
     const name = document.getElementById('setUserName').value.trim();
     const pin = document.getElementById('setUserPin').value.trim();
-    const role = document.getElementById('setUserRole').value;
     if (!name || !pin) return showToast('أدخل الاسم والباسورد / PIN', 'warning');
 
     if (editId) {
       const target = state.users.find((u) => String(u.id) === String(editId));
-      if (target) {
-        target.name = name;
-        target.pin = pin;
-        target.role = role;
-        await dbMutate('users', 'update', { name, pin, role }, 'id', target.id);
+      if (!target) return;
+
+      if (isUserAdmin(target)) {
+        const ok = await updateAdminPasswordEverywhere(pin, name);
+        if (!ok) return;
+        resetUserForm();
+        renderAll();
+        showToast('تم تحديث حساب وباسورد Admin بنجاح 🔐', 'success');
+        return;
       }
+
+      const duplicate = state.users.find((u) => String(u.pin) === pin && String(u.id) !== String(editId));
+      if (duplicate) {
+        return showToast(`هذا الباسورد مستخدم بالفعل لحساب "${duplicate.name}"`, 'error');
+      }
+      target.name = name;
+      target.pin = pin;
+      target.role = 'staff';
+      await persistUsersEverywhere();
+      await dbMutate('users', 'update', { name, pin, role: 'staff' }, 'id', target.id);
       resetUserForm();
     } else {
       const duplicate = state.users.find((u) => String(u.pin) === pin);
       if (duplicate) {
-        return showToast(`هذا الباسورد مستخدم بالفعل للموظف "${duplicate.name}"`, 'error');
+        return showToast(`هذا الباسورد مستخدم بالفعل لحساب "${duplicate.name}"`, 'error');
       }
-      const u = { id: 'usr-' + Date.now(), name, pin, role };
+      const u = { id: 'usr-' + Date.now(), name, pin, role: 'staff' };
       state.users.push(u);
+      await persistUsersEverywhere();
       await dbMutate('users', 'insert', u);
       resetUserForm();
     }
 
     populateLoginUserSelect();
     renderAll();
-    showToast('تم حفظ بيانات اليوزر والباسورد ✅', 'success');
+    showToast('تم حفظ بيانات الحساب والباسورد ✅', 'success');
   });
   document.getElementById('btnCancelEditUser')?.addEventListener('click', resetUserForm);
 
@@ -4276,14 +4450,22 @@ window.checkMgmtPassword = verifyMgmtPassword;
 window.unlockMgmtPanel = verifyMgmtPassword;
 
 window.deleteUser = async (id) => {
-  if (!activeUser || activeUser.role !== 'admin') {
+  if (!hasAdminPrivilege()) {
     return showToast('حذف الحسابات متاح لحساب Admin فقط!', 'error');
   }
+  const target = state.users.find((u) => String(u.id) === String(id));
+  if (!target) return;
+  if (isUserAdmin(target)) {
+    return showToast('لا يمكن حذف حساب Admin الرئيسي — يمكنك تعديل اسمه أو باسورده فقط.', 'warning');
+  }
+  if (!confirm(`هل أنت متأكد من حذف حساب "${target.name}" نهائياً؟`)) return;
+
   state.users = state.users.filter((u) => String(u.id) !== String(id));
+  await persistUsersEverywhere();
   await dbMutate('users', 'delete', null, 'id', id);
   populateLoginUserSelect();
   renderAll();
-  showToast('تم حذف حساب الموظف ✅', 'success');
+  showToast(`تم حذف حساب "${target.name}" بنجاح ✅`, 'success');
 };
 
 window.deleteRoom = async (id) => {
