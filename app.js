@@ -1,803 +1,574 @@
 /* ==========================================================================
-   ARENA POS v4.3 - Complete Operations & Management System
-   Includes: Strictly Single Admin Account (Admin / 1234), Full Staff CRUD,
-   Synced Admin Password Change, Admin-Only System Reset, Business Day Shift Locking,
-   Wrong Day Fixer, Sales Analytics Filters, PS5 Room Cards, Cafe Tables,
-   Visual POS Grid + Inventory Tracking, Receipt Designer (80mm/58mm),
-   Notah Credit System, Reservations, Shift Handover + WhatsApp Reports
+   ARENA POS v5.0 — PlayStation Lounge, Cafe Tables & Direct POS System
+   Features:
+   - Supabase Live Sync + LocalStorage Cache + Offline Queue
+   - Detailed Single & Multi Time/Cost Tracking per Session
+   - Multi-Client Notah (Credit) Split Payment on Checkout
+   - Thermal Receipt Printing (80mm / 58mm) with Subtotal, Discount & Breakdown
+   - Room Selection Modal when Starting from Reservations
+   - Unified Shift & Dashboard Financials + Full Expense Tracking
+   - Management Password Lock & Business Day Correction
    ========================================================================== */
-
-const DEFAULT_SB_URL = 'https://ixzsopivjyuxlesagkju.supabase.co';
-const DEFAULT_SB_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Iml4enNvcGl2anl1eGxlc2Fna2p1Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTQ4NjU3NTksImV4cCI6MjExMDQ0MTc1OX0.odcj0uVh5DkQ99wxJiywhcxZs4XIFCLkLfcHbR2zGD0';
 
 const STORAGE_KEYS = {
   URL: 'arena_sb_url',
   KEY: 'arena_sb_key',
-  CACHE: 'arena_local_db_v4',
-  QUEUE: 'arena_offline_queue_v4',
-  USER: 'arena_active_user_v4',
-  SINGLE_ADMIN_MIGRATED: 'arena_single_admin_v43'
+  LOCAL_DB: 'arena_local_db_v4',
+  SYNC_QUEUE: 'arena_sync_queue_v4',
+  SESSION_USER: 'arena_session_user_v4'
 };
 
-let sbClient = null;
-let isOnline = navigator.onLine;
-let activeUser = null;
-let isMgmtUnlocked = false;
-let liveTimerInterval = null;
-let sysStateSchema = { idCol: 'id', valCol: 'data' };
+const DEFAULT_ROOMS = [
+  { id: 'room-1', name: 'Room 1', device: 'PS5', singleRate: 50, multiRate: 70, status: 'idle', mode: 'Single', game: 'FC 26', timeType: 'open', fixedMinutes: 60, startTime: null, accumulatedElapsedMs: 0, accumulatedCost: 0, singleElapsedMs: 0, singleCost: 0, multiElapsedMs: 0, multiCost: 0, clientName: '', clientPhone: '', orders: [] },
+  { id: 'room-2', name: 'Room 2', device: 'PS5', singleRate: 50, multiRate: 70, status: 'idle', mode: 'Single', game: 'FC 26', timeType: 'open', fixedMinutes: 60, startTime: null, accumulatedElapsedMs: 0, accumulatedCost: 0, singleElapsedMs: 0, singleCost: 0, multiElapsedMs: 0, multiCost: 0, clientName: '', clientPhone: '', orders: [] },
+  { id: 'room-3', name: 'Room 3', device: 'PS5', singleRate: 50, multiRate: 70, status: 'idle', mode: 'Single', game: 'FC 26', timeType: 'open', fixedMinutes: 60, startTime: null, accumulatedElapsedMs: 0, accumulatedCost: 0, singleElapsedMs: 0, singleCost: 0, multiElapsedMs: 0, multiCost: 0, clientName: '', clientPhone: '', orders: [] },
+  { id: 'room-4', name: 'Room 4', device: 'PS5', singleRate: 50, multiRate: 70, status: 'idle', mode: 'Single', game: 'FC 26', timeType: 'open', fixedMinutes: 60, startTime: null, accumulatedElapsedMs: 0, accumulatedCost: 0, singleElapsedMs: 0, singleCost: 0, multiElapsedMs: 0, multiCost: 0, clientName: '', clientPhone: '', orders: [] },
+  { id: 'room-5', name: 'Room 5', device: 'PS5', singleRate: 60, multiRate: 80, status: 'idle', mode: 'Single', game: 'FC 26', timeType: 'open', fixedMinutes: 60, startTime: null, accumulatedElapsedMs: 0, accumulatedCost: 0, singleElapsedMs: 0, singleCost: 0, multiElapsedMs: 0, multiCost: 0, clientName: '', clientPhone: '', orders: [] },
+  { id: 'room-6', name: 'VIP Room', device: 'PS5', singleRate: 80, multiRate: 110, status: 'idle', mode: 'Single', game: 'FC 26', timeType: 'open', fixedMinutes: 60, startTime: null, accumulatedElapsedMs: 0, accumulatedCost: 0, singleElapsedMs: 0, singleCost: 0, multiElapsedMs: 0, multiCost: 0, clientName: '', clientPhone: '', orders: [] }
+];
 
-let state = {
+const DEFAULT_TABLES = [
+  { id: 'tbl-1', name: 'ترابيزة 1', status: 'idle', clientName: '', openedAt: null, orders: [] },
+  { id: 'tbl-2', name: 'ترابيزة 2', status: 'idle', clientName: '', openedAt: null, orders: [] },
+  { id: 'tbl-3', name: 'ترابيزة 3', status: 'idle', clientName: '', openedAt: null, orders: [] },
+  { id: 'tbl-4', name: 'ترابيزة 4', status: 'idle', clientName: '', openedAt: null, orders: [] }
+];
+
+const DEFAULT_MENU = [
+  { id: 'm-1', name: 'إسبريسو', category: 'قهوة', price: 25, cost: 8, stock: 100, minStock: 10, unit: 'كوب', icon: 'coffee' },
+  { id: 'm-2', name: 'قهوة تركي', category: 'قهوة', price: 20, cost: 6, stock: 100, minStock: 10, unit: 'فنجان', icon: 'coffee' },
+  { id: 'm-3', name: 'فرنساوي', category: 'قهوة', price: 25, cost: 8, stock: 100, minStock: 10, unit: 'فنجان', icon: 'coffee' },
+  { id: 'm-4', name: 'كابتشينو', category: 'قهوة', price: 35, cost: 12, stock: 80, minStock: 10, unit: 'كوب', icon: 'coffee' },
+  { id: 'm-5', name: 'شاي', category: 'مشروبات ساخنة', price: 15, cost: 3, stock: 150, minStock: 15, unit: 'كوب', icon: 'tea' },
+  { id: 'm-6', name: 'ينسون / نعناع', category: 'مشروبات ساخنة', price: 15, cost: 4, stock: 100, minStock: 10, unit: 'كوب', icon: 'tea' },
+  { id: 'm-7', name: 'هوت شوكليت', category: 'مشروبات ساخنة', price: 35, cost: 12, stock: 60, minStock: 8, unit: 'كوب', icon: 'coffee' },
+  { id: 'm-8', name: 'آيس لاتيه', category: 'آيس كوفي', price: 40, cost: 14, stock: 60, minStock: 8, unit: 'كوب', icon: 'iced' },
+  { id: 'm-9', name: 'آيس موكا', category: 'آيس كوفي', price: 45, cost: 16, stock: 60, minStock: 8, unit: 'كوب', icon: 'iced' },
+  { id: 'm-10', name: 'بيبسي كانز', category: 'صودا ومياه', price: 20, cost: 13, stock: 96, minStock: 12, unit: 'علبة', icon: 'can' },
+  { id: 'm-11', name: 'سفن أب / ميرندا', category: 'صودا ومياه', price: 20, cost: 13, stock: 72, minStock: 12, unit: 'علبة', icon: 'can' },
+  { id: 'm-12', name: 'مياه معدنية', category: 'صودا ومياه', price: 10, cost: 5, stock: 120, minStock: 20, unit: 'زجاجة', icon: 'water' },
+  { id: 'm-13', name: 'ريد بول', category: 'صودا ومياه', price: 55, cost: 38, stock: 48, minStock: 6, unit: 'علبة', icon: 'can' },
+  { id: 'm-14', name: 'ميلك شيك أوريو', category: 'سموزي وميلك شيك', price: 50, cost: 18, stock: 40, minStock: 5, unit: 'كوب', icon: 'iced' },
+  { id: 'm-15', name: 'سموزي مانجو', category: 'سموزي وميلك شيك', price: 45, cost: 16, stock: 40, minStock: 5, unit: 'كوب', icon: 'juice' },
+  { id: 'm-16', name: 'شيبسي عائلي', category: 'سناكس وحلويات', price: 20, cost: 14, stock: 50, minStock: 8, unit: 'كيس', icon: 'snack' },
+  { id: 'm-17', name: 'وافل نوتيلا', category: 'سناكس وحلويات', price: 55, cost: 20, stock: 30, minStock: 5, unit: 'قطعة', icon: 'sweet' }
+];
+
+const DEFAULT_GAMES = ['FC 26', 'FC 25', 'eFootball PES', 'GTA V', 'Mortal Kombat 1', 'Tekken 8', 'Spider-Man 2', 'Call of Duty'];
+
+const DEFAULT_USERS = [
+  { id: 'usr-admin', name: 'المدير (Admin)', pin: '0000', role: 'admin' },
+  { id: 'usr-cashier1', name: 'كاشير 1', pin: '1234', role: 'staff' }
+];
+
+const DEFAULT_SETTINGS = {
+  brandTitle: 'ARENA POS',
+  mgmtPassword: '0000',
+  ownerWhatsapp: '',
+  receiptPaperSize: '80mm',
+  receiptFontSize: 'normal',
+  receiptLogo: '',
+  receiptHeader: 'ARENA PLAYSTATION & CAFE\nأهلاً بكم في أرينا',
+  receiptFooter: 'شكراً لزيارتكم - نتمنى لكم وقتاً ممتعاً!',
+  games: [...DEFAULT_GAMES]
+};
+
+let supabaseClient = null;
+let isOnline = navigator.onLine;
+let mgmtUnlocked = false;
+let timerInterval = null;
+
+const state = {
+  currentUser: null,
   rooms: [],
   tables: [],
-  games: [],
-  menuItems: [],
-  menuMeta: {},
-  users: [],
+  menu: [],
   clients: [],
+  notahLedger: [],
+  reservations: [],
   shifts: [],
-  shiftDays: {},
-  handovers: [],
   transactions: [],
   expenses: [],
-  reservations: [],
-  settings: {
-    receiptLogo: '',
-    receiptHeader: 'ARENA PLAYSTATION & CAFE\nأهلاً بكم في أرينا',
-    receiptFooter: 'شكراً لزيارتكم - نتمنى لكم وقتاً ممتعاً!',
-    receiptPaperSize: '80mm',
-    receiptFontSize: 'normal',
-    ownerWhatsapp: '',
-    mgmtPassword: '1234'
-  }
+  handovers: [],
+  users: [],
+  settings: { ...DEFAULT_SETTINGS },
+  directCart: [],
+  posCart: [],
+  cafeCategory: 'الكل',
+  posCategory: 'الكل',
+  checkout: {
+    type: null, // 'room' | 'table' | 'direct'
+    targetId: null,
+    title: '',
+    items: [],
+    roomTimeCost: 0,
+    ordersCost: 0,
+    subtotal: 0,
+    discount: 0,
+    grandTotal: 0,
+    singleMs: 0,
+    singleCost: 0,
+    multiMs: 0,
+    multiCost: 0,
+    gameName: '',
+    totalDurationMs: 0,
+    notahSplits: [] // [{ id, clientId, amount }]
+  },
+  pendingReservationId: null
 };
 
-// UI Working State
-let directCart = {};
-let roomPosCart = {};
-let directActiveCat = 'الكل';
-let roomPosActiveCat = 'الكل';
-let selectedStartGame = '';
-let selectedStartMode = 'Single';
-let selectedStartTimeType = 'open';
-let pendingReservationId = null;
-let lastClosedShiftReportText = '';
-let lastHandoverReportText = '';
+/* ==========================================================================
+   HELPERS & UTILITIES
+   ========================================================================== */
+const $ = (id) => document.getElementById(id);
+const uid = (prefix = 'id') => `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
 
-/* ================= 1. DATE HELPERS & INITIALIZATION ================= */
+function fmtMoney(val) {
+  const num = Math.round((Number(val) || 0) * 100) / 100;
+  return `${num % 1 === 0 ? num : num.toFixed(1)} ج.م`;
+}
 
-function getLocalDateStr(dateInput = new Date()) {
-  const d = dateInput instanceof Date ? dateInput : new Date(dateInput);
-  if (isNaN(d.getTime())) return new Date().toISOString().slice(0, 10);
+function getTodayDateStr() {
+  const d = new Date();
   const y = d.getFullYear();
   const m = String(d.getMonth() + 1).padStart(2, '0');
   const day = String(d.getDate()).padStart(2, '0');
   return `${y}-${m}-${day}`;
 }
 
-function formatBusinessDateAr(dateStr) {
-  if (!dateStr) return '-';
+function getArabicDayName(dateStr) {
+  if (!dateStr) return '';
+  const days = ['الأحد', 'الإثنين', 'الثلاثاء', 'الأربعاء', 'الخميس', 'الجمعة', 'السبت'];
+  const [y, m, d] = dateStr.split('-').map(Number);
+  const dt = new Date(y, m - 1, d);
+  return isNaN(dt.getTime()) ? '' : days[dt.getDay()];
+}
+
+function formatTimeShort(iso) {
+  if (!iso) return '-';
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return '-';
+  return d.toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit' });
+}
+
+function formatDateTimeAr(iso) {
+  if (!iso) return '-';
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return '-';
+  return d.toLocaleString('ar-EG', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+}
+
+function formatTimerClock(ms) {
+  const totalSec = Math.max(0, Math.floor((ms || 0) / 1000));
+  const hrs = Math.floor(totalSec / 3600);
+  const mins = Math.floor((totalSec % 3600) / 60);
+  const secs = totalSec % 60;
+  return `${String(hrs).padStart(2, '0')}:${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
+}
+
+function formatDurationAr(ms) {
+  const totalMins = Math.max(0, Math.round((ms || 0) / 60000));
+  const hrs = Math.floor(totalMins / 60);
+  const mins = totalMins % 60;
+  if (hrs === 0) return `${mins} دقيقة`;
+  if (mins === 0) return `${hrs} ساعة`;
+  return `${hrs} س و ${mins} د`;
+}
+
+function showToast(msg, type = 'info') {
+  const container = $('toastContainer');
+  if (!container) return;
+  const el = document.createElement('div');
+  el.className = `toast ${type}`;
+  el.textContent = msg;
+  container.appendChild(el);
+  setTimeout(() => {
+    el.style.opacity = '0';
+    setTimeout(() => el.remove(), 250);
+  }, 3200);
+}
+
+function openModal(id) {
+  const el = $(id);
+  if (el) el.classList.remove('hidden');
+}
+
+function closeModal(id) {
+  const el = $(id);
+  if (el) el.classList.add('hidden');
+}
+
+function getActiveShift() {
+  return state.shifts.find((s) => s.status === 'open') || null;
+}
+
+function getCurrentBusinessDate() {
+  const active = getActiveShift();
+  return active ? active.business_date : getTodayDateStr();
+}
+
+/* ==========================================================================
+   LOCAL CACHE & SUPABASE SYNC ENGINE
+   ========================================================================== */
+function saveLocalDB() {
   try {
-    const parts = dateStr.split('-').map(Number);
-    const d = new Date(parts[0], parts[1] - 1, parts[2]);
-    const dayName = d.toLocaleDateString('ar-EG', { weekday: 'long' });
-    return `${dayName} (${dateStr})`;
-  } catch (_) {
-    return dateStr;
+    const payload = {
+      rooms: state.rooms,
+      tables: state.tables,
+      menu: state.menu,
+      clients: state.clients,
+      notahLedger: state.notahLedger,
+      reservations: state.reservations,
+      shifts: state.shifts,
+      transactions: state.transactions,
+      expenses: state.expenses,
+      handovers: state.handovers,
+      users: state.users,
+      settings: state.settings
+    };
+    localStorage.setItem(STORAGE_KEYS.LOCAL_DB, JSON.stringify(payload));
+  } catch (e) {
+    console.warn('LocalStorage save warning:', e);
   }
 }
 
-function getShiftBusinessDate(shift) {
-  if (!shift) return getLocalDateStr();
-  return (
-    shift.business_date ||
-    state.shiftDays[String(shift.id)] ||
-    getLocalDateStr(shift.start_time)
-  );
-}
-
-function getTxBusinessDate(tx) {
-  if (!tx) return getLocalDateStr();
-  if (tx.business_date) return tx.business_date;
-  if (tx.shift_id && state.shiftDays[String(tx.shift_id)]) {
-    return state.shiftDays[String(tx.shift_id)];
-  }
-  const linkedShift = state.shifts.find((s) => String(s.id) === String(tx.shift_id));
-  if (linkedShift) return getShiftBusinessDate(linkedShift);
-  return getLocalDateStr(tx.created_at);
-}
-
-function getExpBusinessDate(exp) {
-  if (!exp) return getLocalDateStr();
-  if (exp.business_date) return exp.business_date;
-  if (exp.shift_id && state.shiftDays[String(exp.shift_id)]) {
-    return state.shiftDays[String(exp.shift_id)];
-  }
-  const linkedShift = state.shifts.find((s) => String(s.id) === String(exp.shift_id));
-  if (linkedShift) return getShiftBusinessDate(linkedShift);
-  return getLocalDateStr(exp.created_at);
-}
-
-function isUserAdmin(user = activeUser) {
-  if (!user) return false;
-  const roleStr = String(user.role || '').trim().toLowerCase();
-  const nameStr = String(user.name || '').trim().toLowerCase();
-  return (
-    roleStr === 'admin' ||
-    String(user.id) === 'admin-default' ||
-    nameStr === 'admin'
-  );
-}
-
-function hasAdminPrivilege() {
-  return isUserAdmin(activeUser) || isMgmtUnlocked === true;
-}
-
-document.addEventListener('DOMContentLoaded', async () => {
-  registerServiceWorker();
-  setupNetworkListeners();
-  ensureResetModalExists();
-  bindEvents();
-
-  const params = new URLSearchParams(window.location.search);
-  const qUrl = params.get('url');
-  const qKey = params.get('key');
-  if (qUrl && qKey) {
-    localStorage.setItem(STORAGE_KEYS.URL, qUrl.trim());
-    localStorage.setItem(STORAGE_KEYS.KEY, qKey.trim());
-    window.history.replaceState({}, document.title, window.location.pathname);
-  }
-
-  const sbUrl = localStorage.getItem(STORAGE_KEYS.URL) || DEFAULT_SB_URL;
-  const sbKey = localStorage.getItem(STORAGE_KEYS.KEY) || DEFAULT_SB_KEY;
-
-  if (!sbUrl || !sbKey) {
-    showScreen('setupScreen');
-    return;
-  }
-
-  localStorage.setItem(STORAGE_KEYS.URL, sbUrl);
-  localStorage.setItem(STORAGE_KEYS.KEY, sbKey);
-
-  initSupabase(sbUrl, sbKey);
-  loadLocalCache();
-  await syncAllDataFromCloud();
-  await enforceSingleAdminOneTimeCleanup();
-
-  const savedUser = sessionStorage.getItem(STORAGE_KEYS.USER);
-  if (savedUser) {
-    try {
-      const parsedUser = JSON.parse(savedUser);
-      const matched =
-        state.users.find((u) => String(u.id) === String(parsedUser.id)) ||
-        state.users.find((u) => isUserAdmin(u)) ||
-        parsedUser;
-      activeUser = matched;
-      isMgmtUnlocked = isUserAdmin(activeUser);
-      sessionStorage.setItem(STORAGE_KEYS.USER, JSON.stringify(activeUser));
-      enterMainApp();
+function loadLocalDB() {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEYS.LOCAL_DB);
+    if (!raw) {
+      state.rooms = JSON.parse(JSON.stringify(DEFAULT_ROOMS));
+      state.tables = JSON.parse(JSON.stringify(DEFAULT_TABLES));
+      state.menu = JSON.parse(JSON.stringify(DEFAULT_MENU));
+      state.users = JSON.parse(JSON.stringify(DEFAULT_USERS));
+      state.settings = { ...DEFAULT_SETTINGS, games: [...DEFAULT_GAMES] };
+      saveLocalDB();
       return;
-    } catch (_) {}
-  }
-
-  populateLoginUserSelect();
-  showScreen('loginScreen');
-});
-
-function registerServiceWorker() {
-  if ('serviceWorker' in navigator) {
-    navigator.serviceWorker.register('./sw.js').catch(() => {});
-  }
-}
-
-function setupNetworkListeners() {
-  const updateNetUI = () => {
-    isOnline = navigator.onLine;
-    const badge = document.getElementById('connectionBadge');
-    const text = document.getElementById('connectionText');
-    const loginHint = document.getElementById('loginOfflineHint');
-    if (isOnline) {
-      if (badge) badge.className = 'status-badge online';
-      if (text) text.textContent = 'متصل Live';
-      if (loginHint) loginHint.classList.add('hidden');
-      flushOfflineQueue();
-    } else {
-      if (badge) badge.className = 'status-badge offline';
-      if (text) text.textContent = 'أوفلاين (محلي)';
-      if (loginHint) loginHint.classList.remove('hidden');
     }
-    updateQueueBadge();
-  };
-
-  window.addEventListener('online', updateNetUI);
-  window.addEventListener('offline', updateNetUI);
-  updateNetUI();
-}
-
-function initSupabase(url, key) {
-  try {
-    sbClient = window.supabase.createClient(url, key);
-  } catch (err) {
-    console.error('Supabase init error:', err);
-  }
-}
-
-/* ================= 2. LOCAL CACHE & OFFLINE QUEUE ================= */
-
-function saveLocalCache() {
-  try {
-    localStorage.setItem(STORAGE_KEYS.CACHE, JSON.stringify(state));
-  } catch (_) {}
-}
-
-function loadLocalCache() {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEYS.CACHE);
-    if (raw) {
-      const parsed = JSON.parse(raw);
-      state = {
-        ...state,
-        ...parsed,
-        settings: { ...state.settings, ...(parsed.settings || {}) },
-        menuMeta: parsed.menuMeta || {},
-        shiftDays: parsed.shiftDays || {}
-      };
+    const db = JSON.parse(raw);
+    state.rooms = Array.isArray(db.rooms) && db.rooms.length ? db.rooms.map(normalizeRoom) : JSON.parse(JSON.stringify(DEFAULT_ROOMS));
+    state.tables = Array.isArray(db.tables) && db.tables.length ? db.tables : JSON.parse(JSON.stringify(DEFAULT_TABLES));
+    state.menu = Array.isArray(db.menu) && db.menu.length ? db.menu : JSON.parse(JSON.stringify(DEFAULT_MENU));
+    state.clients = Array.isArray(db.clients) ? db.clients : [];
+    state.notahLedger = Array.isArray(db.notahLedger) ? db.notahLedger : [];
+    state.reservations = Array.isArray(db.reservations) ? db.reservations : [];
+    state.shifts = Array.isArray(db.shifts) ? db.shifts : [];
+    state.transactions = Array.isArray(db.transactions) ? db.transactions : [];
+    state.expenses = Array.isArray(db.expenses) ? db.expenses : [];
+    state.handovers = Array.isArray(db.handovers) ? db.handovers : [];
+    state.users = Array.isArray(db.users) && db.users.length ? db.users : JSON.parse(JSON.stringify(DEFAULT_USERS));
+    state.settings = { ...DEFAULT_SETTINGS, ...(db.settings || {}) };
+    if (!Array.isArray(state.settings.games) || !state.settings.games.length) {
+      state.settings.games = [...DEFAULT_GAMES];
     }
-  } catch (_) {}
-
-  ensureDefaultsIfEmpty();
-}
-
-function ensureDefaultsIfEmpty() {
-  const adminPass = String(state.settings.mgmtPassword || '1234');
-  if (!Array.isArray(state.users) || state.users.length === 0) {
-    state.users = [{ id: 'admin-default', name: 'Admin', pin: adminPass, role: 'admin' }];
-  } else {
-    let adminAcc = state.users.find((u) => isUserAdmin(u));
-    if (!adminAcc) {
-      adminAcc = { id: 'admin-default', name: 'Admin', pin: adminPass, role: 'admin' };
-      state.users.unshift(adminAcc);
-    } else {
-      adminAcc.role = 'admin';
-      if (state.settings.mgmtPassword) {
-        adminAcc.pin = String(state.settings.mgmtPassword);
-      }
-    }
-  }
-
-  if (!state.games || state.games.length === 0) {
-    state.games = [
-      { id: 'g1', name: 'FC 26' },
-      { id: 'g2', name: 'PES 2021' },
-      { id: 'g3', name: 'GTA V' },
-      { id: 'g4', name: 'Mortal Kombat' }
-    ];
-  }
-  if (!state.tables || state.tables.length === 0) {
-    state.tables = [1, 2, 3, 4, 5, 6].map((n) => ({
-      id: `tbl-${n}`,
-      name: `ترابيزة ${n}`,
-      status: 'idle',
-      session: null
-    }));
-  }
-  if (!state.settings.mgmtPassword) {
-    state.settings.mgmtPassword = '1234';
-  }
-}
-
-async function purgeCloudUsersTable() {
-  if (!sbClient || !navigator.onLine) return;
-  try {
-    const { data } = await sbClient.from('users').select('id');
-    if (Array.isArray(data)) {
-      for (const row of data) {
-        if (row && row.id !== undefined && row.id !== null) {
-          await sbClient.from('users').delete().eq('id', row.id);
-        }
-      }
-    }
-  } catch (_) {}
-}
-
-async function enforceSingleAdminOneTimeCleanup() {
-  if (localStorage.getItem(STORAGE_KEYS.SINGLE_ADMIN_MIGRATED) === '1') return;
-
-  await purgeCloudUsersTable();
-
-  const singleAdmin = { id: 'admin-default', name: 'Admin', pin: '1234', role: 'admin' };
-  state.users = [singleAdmin];
-  state.settings.mgmtPassword = '1234';
-
-  await saveSystemStateKey('arena_users', state.users);
-  await saveSystemStateKey('arena_settings', state.settings);
-  await dbMutate('users', 'upsert', singleAdmin);
-
-  if (activeUser) {
-    activeUser = singleAdmin;
-    isMgmtUnlocked = true;
-    sessionStorage.setItem(STORAGE_KEYS.USER, JSON.stringify(singleAdmin));
-  }
-
-  saveLocalCache();
-  populateLoginUserSelect();
-  localStorage.setItem(STORAGE_KEYS.SINGLE_ADMIN_MIGRATED, '1');
-}
-
-function getOfflineQueue() {
-  try {
-    return JSON.parse(localStorage.getItem(STORAGE_KEYS.QUEUE) || '[]');
-  } catch (_) {
-    return [];
-  }
-}
-
-function setOfflineQueue(q) {
-  localStorage.setItem(STORAGE_KEYS.QUEUE, JSON.stringify(q));
-  updateQueueBadge();
-}
-
-function updateQueueBadge() {
-  const q = getOfflineQueue();
-  const btn = document.getElementById('syncQueueBtn');
-  const count = document.getElementById('syncQueueCount');
-  if (!btn || !count) return;
-  count.textContent = q.length;
-  btn.classList.toggle('hidden', q.length === 0);
-}
-
-async function dbMutate(table, action, payload, matchCol = 'id', matchVal = null) {
-  saveLocalCache();
-
-  if (!sbClient || !navigator.onLine) {
-    const q = getOfflineQueue();
-    q.push({ table, action, payload, matchCol, matchVal, ts: Date.now() });
-    setOfflineQueue(q);
-    return;
-  }
-
-  const ok = await executeSingleCloudOp({ table, action, payload, matchCol, matchVal });
-  if (!ok) {
-    const q = getOfflineQueue();
-    q.push({ table, action, payload, matchCol, matchVal, ts: Date.now() });
-    setOfflineQueue(q);
-  }
-}
-
-async function executeSingleCloudOp(op) {
-  if (!sbClient) return false;
-  try {
-    let res;
-    if (op.action === 'upsert') {
-      res = await sbClient.from(op.table).upsert(op.payload);
-    } else if (op.action === 'insert') {
-      res = await sbClient.from(op.table).insert(op.payload);
-    } else if (op.action === 'update') {
-      res = await sbClient.from(op.table).update(op.payload).eq(op.matchCol, op.matchVal);
-    } else if (op.action === 'delete') {
-      res = await sbClient.from(op.table).delete().eq(op.matchCol, op.matchVal);
-    }
-    if (res && res.error) {
-      if (res.error.code === 'PGRST204' || res.error.code === '42703') {
-        const msg = res.error.message || '';
-        const match = msg.match(/'([^']+)'/);
-        if (match && match[1] && op.payload && typeof op.payload === 'object') {
-          const cleanPayload = { ...op.payload };
-          delete cleanPayload[match[1]];
-          return executeSingleCloudOp({ ...op, payload: cleanPayload });
-        }
-      }
-      return false;
-    }
-    return true;
-  } catch (_) {
-    return false;
-  }
-}
-
-async function flushOfflineQueue() {
-  if (!sbClient || !navigator.onLine) return;
-  const q = getOfflineQueue();
-  if (q.length === 0) return;
-
-  const remaining = [];
-  for (const op of q) {
-    const ok = await executeSingleCloudOp(op);
-    if (!ok) remaining.push(op);
-  }
-  setOfflineQueue(remaining);
-  if (remaining.length === 0) {
-    showToast('تمت مزامنة جميع عمليات الأوفلاين مع السحابة ✅', 'success');
-    await syncAllDataFromCloud();
-  }
-}
-
-/* ================= 3. CLOUD SYNC & REALTIME ================= */
-
-async function syncAllDataFromCloud() {
-  if (!sbClient || !navigator.onLine) return;
-
-  try {
-    const [
-      roomsRes,
-      gamesRes,
-      menuRes,
-      usersRes,
-      clientsRes,
-      shiftsRes,
-      txRes,
-      expRes,
-      resvRes,
-      sysRes
-    ] = await Promise.all([
-      sbClient.from('rooms').select('*').order('id', { ascending: true }),
-      sbClient.from('games').select('*'),
-      sbClient.from('menu_items').select('*'),
-      sbClient.from('users').select('*'),
-      sbClient.from('clients').select('*'),
-      sbClient.from('shifts').select('*').order('start_time', { ascending: false }).limit(60),
-      sbClient.from('transactions').select('*').order('created_at', { ascending: false }).limit(500),
-      sbClient.from('expenses').select('*').order('created_at', { ascending: false }).limit(250),
-      sbClient.from('reservations').select('*').order('res_datetime', { ascending: true }),
-      sbClient.from('system_state').select('*')
-    ]);
-
-    let hasCloudUsersKey = false;
-
-    if (sysRes.data && sysRes.data.length > 0) {
-      const sample = sysRes.data[0];
-      if ('key' in sample && 'value' in sample) {
-        sysStateSchema = { idCol: 'key', valCol: 'value' };
-      } else {
-        sysStateSchema = { idCol: 'id', valCol: 'data' };
-      }
-      const cfgRow = sysRes.data.find((r) => r[sysStateSchema.idCol] === 'arena_settings');
-      if (cfgRow && cfgRow[sysStateSchema.valCol]) {
-        state.settings = { ...state.settings, ...cfgRow[sysStateSchema.valCol] };
-      }
-      const usersRow = sysRes.data.find((r) => r[sysStateSchema.idCol] === 'arena_users');
-      if (usersRow && Array.isArray(usersRow[sysStateSchema.valCol]) && usersRow[sysStateSchema.valCol].length > 0) {
-        hasCloudUsersKey = true;
-        state.users = usersRow[sysStateSchema.valCol].map((u) => ({
-          ...u,
-          role: isUserAdmin(u) ? 'admin' : 'staff'
-        }));
-      }
-      const tblRow = sysRes.data.find((r) => r[sysStateSchema.idCol] === 'arena_tables');
-      if (tblRow && Array.isArray(tblRow[sysStateSchema.valCol]) && tblRow[sysStateSchema.valCol].length > 0) {
-        state.tables = tblRow[sysStateSchema.valCol];
-      }
-      const hoRow = sysRes.data.find((r) => r[sysStateSchema.idCol] === 'arena_handovers');
-      if (hoRow && Array.isArray(hoRow[sysStateSchema.valCol])) {
-        state.handovers = hoRow[sysStateSchema.valCol];
-      }
-      const menuMetaRow = sysRes.data.find((r) => r[sysStateSchema.idCol] === 'arena_menu_meta');
-      if (menuMetaRow && menuMetaRow[sysStateSchema.valCol] && typeof menuMetaRow[sysStateSchema.valCol] === 'object') {
-        state.menuMeta = menuMetaRow[sysStateSchema.valCol];
-      }
-      const shiftDaysRow = sysRes.data.find((r) => r[sysStateSchema.idCol] === 'arena_shift_days');
-      if (shiftDaysRow && shiftDaysRow[sysStateSchema.valCol] && typeof shiftDaysRow[sysStateSchema.valCol] === 'object') {
-        state.shiftDays = shiftDaysRow[sysStateSchema.valCol];
-      }
-    }
-
-    if (!hasCloudUsersKey) {
-      if (usersRes.data && usersRes.data.length > 0) {
-        state.users = usersRes.data.map((u) => ({
-          ...u,
-          role: isUserAdmin(u) ? 'admin' : 'staff'
-        }));
-      } else {
-        state.users = [
-          {
-            id: 'admin-default',
-            name: 'Admin',
-            pin: String(state.settings.mgmtPassword || '1234'),
-            role: 'admin'
-          }
-        ];
-      }
-    }
-
-    if (roomsRes.data) {
-      state.rooms = roomsRes.data.map(normalizeRoom);
-    }
-    if (gamesRes.data && gamesRes.data.length > 0) {
-      state.games = gamesRes.data;
-    }
-    if (menuRes.data) {
-      state.menuItems = menuRes.data.map((m) => {
-        const meta = state.menuMeta[String(m.id)] || {};
-        return {
-          ...m,
-          category: m.category || 'مشروبات ساخنة',
-          icon: m.icon || 'auto',
-          price: Number(m.price || 0),
-          cost: Number(m.cost ?? meta.cost ?? 0),
-          stock: m.stock !== undefined && m.stock !== null ? Number(m.stock) : (meta.stock !== undefined ? Number(meta.stock) : null),
-          min_stock: Number(m.min_stock ?? meta.min_stock ?? 5),
-          unit: m.unit || meta.unit || 'قطعة'
-        };
-      });
-    }
-    if (clientsRes.data) {
-      state.clients = clientsRes.data.map((c) => ({
-        ...c,
-        notah_balance: Number(c.notah_balance || 0),
-        notah_history: Array.isArray(c.notah_history) ? c.notah_history : []
-      }));
-    }
-    if (shiftsRes.data) {
-      state.shifts = shiftsRes.data.map((s) => ({
-        ...s,
-        business_date: s.business_date || state.shiftDays[String(s.id)] || getLocalDateStr(s.start_time)
-      }));
-    }
-    if (txRes.data) {
-      state.transactions = txRes.data.map((t) => ({
-        ...t,
-        business_date: getTxBusinessDate(t)
-      }));
-    }
-    if (expRes.data) {
-      state.expenses = expRes.data.map((e) => ({
-        ...e,
-        business_date: getExpBusinessDate(e)
-      }));
-    }
-    if (resvRes.data) {
-      state.reservations = resvRes.data;
-    }
-
-    ensureDefaultsIfEmpty();
-    populateLoginUserSelect();
-    saveLocalCache();
-    if (activeUser) renderAll();
-  } catch (err) {
-    console.warn('Cloud fetch fallback to local cache:', err);
+  } catch (e) {
+    console.error('Error loading local DB:', e);
   }
 }
 
 function normalizeRoom(r) {
+  const singleMs = Number(r.singleElapsedMs) || 0;
+  const multiMs = Number(r.multiElapsedMs) || 0;
+  const singleCost = Number(r.singleCost) || 0;
+  const multiCost = Number(r.multiCost) || 0;
+  const accMs = Number(r.accumulatedElapsedMs) || (singleMs + multiMs);
+  const accCost = Number(r.accumulatedCost) || (singleCost + multiCost);
   return {
-    id: String(r.id),
-    name: r.name || `Room ${r.id}`,
-    type: r.type || r.device_type || 'PS5',
-    single_rate: Number(r.single_rate ?? r.singleRate ?? 50),
-    multi_rate: Number(r.multi_rate ?? r.multiRate ?? 70),
-    status: r.status || 'idle',
-    session: r.session || null
+    ...r,
+    singleElapsedMs: singleMs,
+    singleCost: singleCost,
+    multiElapsedMs: multiMs,
+    multiCost: multiCost,
+    accumulatedElapsedMs: accMs,
+    accumulatedCost: accCost,
+    orders: Array.isArray(r.orders) ? r.orders : []
   };
 }
 
-function subscribeRealtime() {
-  if (!sbClient) return;
+function getSyncQueue() {
   try {
-    sbClient
-      .channel('arena-live-sync')
-      .on('postgres_changes', { event: '*', schema: 'public' }, () => {
-        if (getOfflineQueue().length === 0) {
-          syncAllDataFromCloud();
-        }
-      })
-      .subscribe();
-  } catch (_) {}
-}
-
-async function saveSystemStateKey(keyName, valueObj) {
-  const payload = {
-    [sysStateSchema.idCol]: keyName,
-    [sysStateSchema.valCol]: valueObj
-  };
-  await dbMutate('system_state', 'upsert', payload, sysStateSchema.idCol, keyName);
-}
-
-async function persistUsersEverywhere() {
-  saveLocalCache();
-  await saveSystemStateKey('arena_users', state.users);
-}
-
-/* ================= 4. AUTH, ADMIN PASSWORD SYNC & NAVIGATION ================= */
-
-async function updateAdminPasswordEverywhere(newPass, newName = null) {
-  const cleanPass = String(newPass || '').trim();
-  if (!cleanPass) return false;
-
-  const staffCollision = state.users.find(
-    (u) => !isUserAdmin(u) && String(u.pin) === cleanPass
-  );
-  if (staffCollision) {
-    showToast(`هذا الباسورد مستخدم بالفعل للموظف "${staffCollision.name}" — اختر باسورد مختلف`, 'error');
-    return false;
+    return JSON.parse(localStorage.getItem(STORAGE_KEYS.SYNC_QUEUE) || '[]');
+  } catch {
+    return [];
   }
+}
 
-  state.settings.mgmtPassword = cleanPass;
+function setSyncQueue(q) {
+  localStorage.setItem(STORAGE_KEYS.SYNC_QUEUE, JSON.stringify(q));
+  updateSyncBadge();
+}
 
-  let adminAcc = state.users.find((u) => isUserAdmin(u));
-  if (!adminAcc) {
-    adminAcc = { id: 'admin-default', name: newName || 'Admin', pin: cleanPass, role: 'admin' };
-    state.users.unshift(adminAcc);
+function updateSyncBadge() {
+  const q = getSyncQueue();
+  const btn = $('syncQueueBtn');
+  const cnt = $('syncQueueCount');
+  if (!btn || !cnt) return;
+  if (q.length > 0) {
+    cnt.textContent = q.length;
+    btn.classList.remove('hidden');
   } else {
-    adminAcc.pin = cleanPass;
-    adminAcc.role = 'admin';
-    if (newName) adminAcc.name = newName;
+    btn.classList.add('hidden');
   }
-
-  await persistUsersEverywhere();
-  await saveSystemStateKey('arena_settings', state.settings);
-  await dbMutate(
-    'users',
-    'upsert',
-    { id: adminAcc.id, name: adminAcc.name, pin: adminAcc.pin, role: 'admin' },
-    'id',
-    adminAcc.id
-  );
-
-  if (activeUser && (isUserAdmin(activeUser) || isMgmtUnlocked)) {
-    activeUser = { ...adminAcc, role: 'admin' };
-    isMgmtUnlocked = true;
-    sessionStorage.setItem(STORAGE_KEYS.USER, JSON.stringify(activeUser));
-    const badgeEl = document.getElementById('currentUserBadge');
-    if (badgeEl) badgeEl.textContent = `${activeUser.name} (مدير Admin)`;
-  }
-
-  saveLocalCache();
-  populateLoginUserSelect();
-  return true;
 }
 
-function populateLoginUserSelect() {
-  const sel = document.getElementById('loginUserSelect');
+function queueCloudSync(table, action, payload) {
+  saveLocalDB();
+  if (!supabaseClient) return;
+  const q = getSyncQueue();
+  q.push({ id: uid('sq'), table, action, payload, ts: Date.now() });
+  setSyncQueue(q);
+  if (navigator.onLine) {
+    flushSyncQueue();
+  }
+}
+
+async function flushSyncQueue() {
+  if (!supabaseClient || !navigator.onLine) return;
+  const q = getSyncQueue();
+  if (!q.length) return;
+  const remaining = [];
+  for (const job of q) {
+    try {
+      if (job.action === 'upsert') {
+        const { error } = await supabaseClient.from(job.table).upsert(job.payload);
+        if (error) throw error;
+      } else if (job.action === 'delete') {
+        const { error } = await supabaseClient.from(job.table).delete().eq('id', job.payload.id);
+        if (error) throw error;
+      }
+    } catch (err) {
+      console.warn('Sync job deferred:', job.table, err.message);
+      remaining.push(job);
+    }
+  }
+  setSyncQueue(remaining);
+  if (remaining.length === 0) {
+    showToast('تمت مزامنة البيانات مع السحابة ✅', 'success');
+  }
+}
+
+async function pullFromSupabase() {
+  if (!supabaseClient || !navigator.onLine) return;
+  try {
+    const tablesToFetch = [
+      { key: 'rooms', table: 'arena_rooms', normalize: normalizeRoom },
+      { key: 'tables', table: 'arena_tables' },
+      { key: 'menu', table: 'arena_menu' },
+      { key: 'clients', table: 'arena_clients' },
+      { key: 'notahLedger', table: 'arena_notah_ledger' },
+      { key: 'reservations', table: 'arena_reservations' },
+      { key: 'shifts', table: 'arena_shifts' },
+      { key: 'transactions', table: 'arena_transactions' },
+      { key: 'expenses', table: 'arena_expenses' },
+      { key: 'handovers', table: 'arena_handovers' },
+      { key: 'users', table: 'arena_users' }
+    ];
+
+    for (const item of tablesToFetch) {
+      const { data, error } = await supabaseClient.from(item.table).select('*');
+      if (!error && Array.isArray(data) && data.length > 0) {
+        state[item.key] = item.normalize ? data.map(item.normalize) : data;
+      }
+    }
+
+    const { data: settingsData, error: setErr } = await supabaseClient.from('arena_settings').select('*').eq('id', 'main').maybeSingle();
+    if (!setErr && settingsData && settingsData.data) {
+      state.settings = { ...DEFAULT_SETTINGS, ...settingsData.data };
+    }
+
+    saveLocalDB();
+    renderAll();
+  } catch (e) {
+    console.warn('Supabase pull skipped (using local cache):', e.message);
+  }
+}
+
+function updateConnectionUI() {
+  isOnline = navigator.onLine;
+  const badge = $('connectionBadge');
+  const text = $('connectionText');
+  const loginHint = $('loginOfflineHint');
+  if (badge && text) {
+    badge.className = `status-badge ${isOnline ? 'online' : 'offline'}`;
+    text.textContent = isOnline ? 'متصل Live' : 'أوفلاين (محلي)';
+  }
+  if (loginHint) {
+    loginHint.classList.toggle('hidden', isOnline);
+  }
+  updateSyncBadge();
+}
+
+/* ==========================================================================
+   INITIALIZATION & AUTHENTICATION
+   ========================================================================== */
+async function initApp() {
+  loadLocalDB();
+  updateConnectionUI();
+
+  window.addEventListener('online', () => {
+    updateConnectionUI();
+    flushSyncQueue();
+  });
+  window.addEventListener('offline', updateConnectionUI);
+
+  const sbUrl = localStorage.getItem(STORAGE_KEYS.URL);
+  const sbKey = localStorage.getItem(STORAGE_KEYS.KEY);
+
+  if (sbUrl && sbKey && window.supabase) {
+    try {
+      supabaseClient = window.supabase.createClient(sbUrl, sbKey);
+    } catch (e) {
+      console.error('Supabase init error:', e);
+    }
+  }
+
+  bindEvents();
+
+  if (!sbUrl || !sbKey) {
+    $('setupScreen').classList.remove('hidden');
+    return;
+  }
+
+  if (supabaseClient && navigator.onLine) {
+    await flushSyncQueue();
+    await pullFromSupabase();
+  }
+
+  populateLoginUsers();
+
+  const savedUserRaw = sessionStorage.getItem(STORAGE_KEYS.SESSION_USER);
+  if (savedUserRaw) {
+    try {
+      state.currentUser = JSON.parse(savedUserRaw);
+      enterMainApp();
+      return;
+    } catch { /* ignore */ }
+  }
+
+  $('loginScreen').classList.remove('hidden');
+}
+
+function populateLoginUsers() {
+  const sel = $('loginUserSelect');
   if (!sel) return;
-  const currentVal = sel.value;
-  sel.innerHTML =
-    `<option value="">-- دخول سريع بالباسورد / PIN --</option>` +
-    state.users
-      .map(
-        (u) =>
-          `<option value="${u.id}">${escapeHtml(u.name)} (${isUserAdmin(u) ? 'مدير Admin' : 'موظف / كاشير'})</option>`
-      )
-      .join('');
-  if (currentVal && [...sel.options].some((o) => o.value === currentVal)) {
-    sel.value = currentVal;
-  }
-}
-
-function showScreen(screenId) {
-  ['setupScreen', 'loginScreen', 'mainApp'].forEach((id) => {
-    const el = document.getElementById(id);
-    if (el) el.classList.toggle('hidden', id !== screenId);
+  sel.innerHTML = '<option value="">-- دخول سريع بالرقم السري / الباسورد --</option>';
+  state.users.forEach((u) => {
+    const opt = document.createElement('option');
+    opt.value = u.id;
+    opt.textContent = `${u.name} (${u.role === 'admin' ? 'مدير' : 'كاشير'})`;
+    sel.appendChild(opt);
   });
 }
 
 function handleLogin() {
-  const pinInput = document.getElementById('loginPin');
-  const errEl = document.getElementById('loginError');
-  const selectedUserId = document.getElementById('loginUserSelect')?.value || '';
-  const pin = (pinInput.value || '').trim();
+  const selectedId = $('loginUserSelect').value;
+  const pin = $('loginPin').value.trim();
+  const errEl = $('loginError');
 
-  let found = null;
-  if (selectedUserId) {
-    found = state.users.find((u) => String(u.id) === String(selectedUserId) && String(u.pin) === pin);
+  let matchedUser = null;
+  if (selectedId) {
+    matchedUser = state.users.find((u) => u.id === selectedId && String(u.pin) === pin);
   } else {
-    found =
-      state.users.find((u) => isUserAdmin(u) && (String(u.pin) === pin || String(state.settings.mgmtPassword) === pin)) ||
-      state.users.find((u) => String(u.pin) === pin);
+    matchedUser = state.users.find((u) => String(u.pin) === pin);
   }
 
-  if (!found) {
-    if (errEl) errEl.classList.remove('hidden');
-    pinInput.value = '';
+  if (!matchedUser) {
+    errEl.classList.remove('hidden');
     return;
   }
 
-  if (errEl) errEl.classList.add('hidden');
-  pinInput.value = '';
-  activeUser = found;
-  isMgmtUnlocked = isUserAdmin(found);
-  sessionStorage.setItem(STORAGE_KEYS.USER, JSON.stringify(found));
+  errEl.classList.add('hidden');
+  $('loginPin').value = '';
+  state.currentUser = matchedUser;
+  sessionStorage.setItem(STORAGE_KEYS.SESSION_USER, JSON.stringify(matchedUser));
   enterMainApp();
 }
 
 function enterMainApp() {
-  showScreen('mainApp');
-  const badgeEl = document.getElementById('currentUserBadge');
-  if (badgeEl) {
-    badgeEl.textContent = `${activeUser.name} (${isUserAdmin(activeUser) ? 'مدير Admin' : 'موظف / كاشير'})`;
-  }
+  $('setupScreen').classList.add('hidden');
+  $('loginScreen').classList.add('hidden');
+  $('mainApp').classList.remove('hidden');
 
+  $('currentUserBadge').textContent = `${state.currentUser.name} (${state.currentUser.role === 'admin' ? 'مدير' : 'كاشير'})`;
+  $('brandTitleHeader').textContent = state.settings.brandTitle || 'ARENA POS';
+
+  mgmtUnlocked = false;
   updateMgmtLockUI();
-
-  const todayStr = getLocalDateStr();
-  const fromEl = document.getElementById('reportDateFrom');
-  const toEl = document.getElementById('reportDateTo');
-  if (fromEl && !fromEl.value) fromEl.value = todayStr;
-  if (toEl && !toEl.value) toEl.value = todayStr;
-
-  subscribeRealtime();
-  startLiveTicker();
   renderAll();
-  flushOfflineQueue();
+  startLiveTimers();
 }
 
-function updateMgmtLockUI() {
-  const indicator = document.getElementById('mgmtLockIndicator');
-  if (indicator) {
-    if (isMgmtUnlocked) {
-      indicator.className = 'mgmt-pill unlocked';
-      indicator.textContent = '🔓 الإدارة مفتوحة';
-    } else {
-      indicator.className = 'mgmt-pill locked';
-      indicator.textContent = '🔒 الإدارة مقفولة';
-    }
-  }
-
-  document.querySelectorAll('.nav-tab.mgmt-protected').forEach((tabBtn) => {
-    const labelMap = {
-      dashboard: isMgmtUnlocked ? '📊 الداشبورد والتحكم' : '🔒📊 الداشبورد والتحكم',
-      reports: isMgmtUnlocked ? '📑 التقارير والسجل' : '🔒📑 التقارير والسجل',
-      settings: isMgmtUnlocked ? '⚙️ الإعدادات والمنيو والمخزون' : '🔒⚙️ الإعدادات والمنيو والمخزون'
-    };
-    if (labelMap[tabBtn.dataset.tab]) {
-      tabBtn.textContent = labelMap[tabBtn.dataset.tab];
-    }
-  });
-
-  ['dashboard', 'reports', 'settings'].forEach((sec) => {
-    const gate = document.getElementById(`${sec}LockedGate`);
-    const content = document.getElementById(`${sec}UnlockedContent`);
-    if (gate) gate.classList.toggle('hidden', isMgmtUnlocked);
-    if (content) content.classList.toggle('hidden', !isMgmtUnlocked);
-  });
+function handleLogout() {
+  state.currentUser = null;
+  mgmtUnlocked = false;
+  sessionStorage.removeItem(STORAGE_KEYS.SESSION_USER);
+  if (timerInterval) clearInterval(timerInterval);
+  $('mainApp').classList.add('hidden');
+  populateLoginUsers();
+  $('loginScreen').classList.remove('hidden');
 }
 
+/* ==========================================================================
+   MANAGEMENT PASSWORD & TABS NAVIGATION
+   ========================================================================== */
 function openMgmtAuthModal(targetTab = 'dashboard') {
-  if (isMgmtUnlocked) {
+  if (mgmtUnlocked) {
     switchTab(targetTab);
     return;
   }
-  const targetInput = document.getElementById('mgmtTargetTab');
-  const passInput = document.getElementById('mgmtPasswordInput');
-  const errEl = document.getElementById('mgmtAuthError');
-  if (targetInput) targetInput.value = targetTab;
-  if (passInput) passInput.value = '';
-  if (errEl) errEl.classList.add('hidden');
+  $('mgmtTargetTab').value = targetTab;
+  $('mgmtPasswordInput').value = '';
+  $('mgmtAuthError').classList.add('hidden');
   openModal('modalMgmtAuth');
-  setTimeout(() => passInput?.focus(), 100);
+  setTimeout(() => $('mgmtPasswordInput').focus(), 80);
 }
 
 function verifyMgmtPassword() {
-  const entered = (document.getElementById('mgmtPasswordInput')?.value || '').trim();
-  const adminUser = state.users.find((u) => isUserAdmin(u));
-  const validPasswords = [
-    String(state.settings.mgmtPassword || '1234'),
-    adminUser ? String(adminUser.pin) : '1234'
-  ];
-  const errEl = document.getElementById('mgmtAuthError');
+  const entered = $('mgmtPasswordInput').value.trim();
+  const adminUsers = state.users.filter((u) => u.role === 'admin');
+  const validAdminPin = adminUsers.some((u) => String(u.pin) === entered);
+  const validMgmtPass = entered && entered === String(state.settings.mgmtPassword || '0000');
 
-  if (!validPasswords.includes(entered)) {
-    if (errEl) errEl.classList.remove('hidden');
-    const inp = document.getElementById('mgmtPasswordInput');
-    if (inp) {
-      inp.value = '';
-      inp.focus();
-    }
+  if (!validAdminPin && !validMgmtPass) {
+    $('mgmtAuthError').classList.remove('hidden');
     return;
   }
 
-  if (errEl) errEl.classList.add('hidden');
-  isMgmtUnlocked = true;
+  mgmtUnlocked = true;
   closeModal('modalMgmtAuth');
   updateMgmtLockUI();
-  const targetTab = document.getElementById('mgmtTargetTab')?.value || 'dashboard';
-  switchTab(targetTab);
-  showToast('تم فتح لوحة تحكم الإدارة بنجاح 🔓', 'success');
+  const target = $('mgmtTargetTab').value || 'dashboard';
+  switchTab(target);
+  showToast('تم فتح صلاحيات الإدارة بنجاح 🔓', 'success');
 }
 
-function lockMgmtPanel() {
-  isMgmtUnlocked = false;
+function lockManagement() {
+  mgmtUnlocked = false;
   updateMgmtLockUI();
   switchTab('rooms');
-  showToast('تم قفل لوحة الإدارة بباسورد 🔒', 'info');
+  showToast('تم قفل الإدارة 🔒', 'info');
+}
+
+function updateMgmtLockUI() {
+  const pill = $('mgmtLockIndicator');
+  if (pill) {
+    pill.className = `mgmt-pill ${mgmtUnlocked ? 'unlocked' : 'locked'}`;
+    pill.textContent = mgmtUnlocked ? '🔓 الإدارة مفتوحة' : '🔒 الإدارة مقفولة';
+  }
+
+  const protectedSections = [
+    { gate: 'dashboardLockedGate', content: 'dashboardUnlockedContent' },
+    { gate: 'reportsLockedGate', content: 'reportsUnlockedContent' },
+    { gate: 'settingsLockedGate', content: 'settingsUnlockedContent' }
+  ];
+
+  protectedSections.forEach(({ gate, content }) => {
+    const gEl = $(gate);
+    const cEl = $(content);
+    if (gEl && cEl) {
+      gEl.classList.toggle('hidden', mgmtUnlocked);
+      cEl.classList.toggle('hidden', !mgmtUnlocked);
+    }
+  });
 }
 
 function switchTab(tabName) {
@@ -808,3688 +579,2907 @@ function switchTab(tabName) {
     panel.classList.toggle('active', panel.id === `tab-${tabName}`);
   });
 
-  if (['dashboard', 'reports', 'settings'].includes(tabName) && !isMgmtUnlocked) {
-    updateMgmtLockUI();
-    openMgmtAuthModal(tabName);
-    return;
-  }
-
-  if (tabName === 'dashboard') renderDashboard();
-  if (tabName === 'rooms') renderRooms();
-  if (tabName === 'tables') renderTables();
-  if (tabName === 'cafe') renderDirectCafePos();
-  if (tabName === 'reservations') renderReservationsTab();
-  if (tabName === 'clients') renderClientsTab();
-  if (tabName === 'shift') renderShiftTab();
-  if (tabName === 'reports') renderReports();
-  if (tabName === 'settings') renderSettings();
-}
-
-/* ================= 5. MANAGEMENT DASHBOARD, STAFF ACCOUNTS & ANALYTICS FILTERS ================= */
-
-function getAllRecordedBusinessDays() {
-  const daysSet = new Set();
-  const openShift = getOpenShift();
-  if (openShift) daysSet.add(getShiftBusinessDate(openShift));
-
-  state.shifts.forEach((s) => daysSet.add(getShiftBusinessDate(s)));
-  state.transactions.forEach((t) => daysSet.add(getTxBusinessDate(t)));
-  state.expenses.forEach((e) => daysSet.add(getExpBusinessDate(e)));
-
-  return Array.from(daysSet).filter(Boolean).sort((a, b) => b.localeCompare(a));
-}
-
-function populateDashboardFilters() {
-  const openShift = getOpenShift();
-  const currentDay = openShift ? getShiftBusinessDate(openShift) : getLocalDateStr();
-  const allDays = getAllRecordedBusinessDays();
-
-  const daySel = document.getElementById('dashFilterBusinessDay');
-  if (daySel) {
-    const prev = daySel.value || 'CURRENT';
-    const otherDays = allDays.filter((d) => d !== currentDay);
-    daySel.innerHTML =
-      `<option value="CURRENT">اليوم / الوردية الحالية (${currentDay})</option>` +
-      `<option value="ALL">كل الأيام المسجلة</option>` +
-      otherDays.map((d) => `<option value="${d}">${formatBusinessDateAr(d)}</option>`).join('');
-    if ([...daySel.options].some((o) => o.value === prev)) {
-      daySel.value = prev;
-    }
-  }
-
-  const wrongDaySel = document.getElementById('dashWrongDaySelect');
-  if (wrongDaySel) {
-    const prevWrong = wrongDaySel.value;
-    if (allDays.length === 0) {
-      wrongDaySel.innerHTML = `<option value="">لا توجد أيام مسجلة حالياً</option>`;
-    } else {
-      wrongDaySel.innerHTML = allDays
-        .map((d) => {
-          const isCurrentOpen = openShift && getShiftBusinessDate(openShift) === d;
-          return `<option value="${d}">${formatBusinessDateAr(d)}${isCurrentOpen ? ' — [مفتوح حالياً]' : ''}</option>`;
-        })
-        .join('');
-      if (prevWrong && allDays.includes(prevWrong)) {
-        wrongDaySel.value = prevWrong;
-      }
-    }
-  }
-
-  const correctDayInput = document.getElementById('dashCorrectDayInput');
-  if (correctDayInput && !correctDayInput.value) {
-    correctDayInput.value = getLocalDateStr();
-  }
-
-  const roomSel = document.getElementById('dashFilterRoom');
-  if (roomSel) {
-    const prevRoom = roomSel.value || 'ALL';
-    roomSel.innerHTML =
-      `<option value="ALL">كل الغرف والكافيه</option>` +
-      `<option value="ROOMS_ONLY">كل الغرف فقط</option>` +
-      `<option value="CAFE_ONLY">الترابيزات والتيك أواي فقط</option>` +
-      state.rooms.map((r) => `<option value="room:${escapeAttr(r.name)}">🎮 ${escapeHtml(r.name)}</option>`).join('') +
-      state.tables.map((t) => `<option value="table:${escapeAttr(t.name)}">🪑 ${escapeHtml(t.name)}</option>`).join('');
-    if ([...roomSel.options].some((o) => o.value === prevRoom)) {
-      roomSel.value = prevRoom;
-    }
-  }
-
-  const drinkSel = document.getElementById('dashFilterDrink');
-  if (drinkSel) {
-    const prevDrink = drinkSel.value || 'ALL';
-    drinkSel.innerHTML =
-      `<option value="ALL">كل المشاريب والأصناف</option>` +
-      state.menuItems
-        .map((m) => `<option value="${escapeAttr(m.name)}">☕ ${escapeHtml(m.name)} (${m.price} ج)</option>`)
-        .join('');
-    if ([...drinkSel.options].some((o) => o.value === prevDrink)) {
-      drinkSel.value = prevDrink;
-    }
-  }
-
-  const cashierSel = document.getElementById('dashFilterCashier');
-  if (cashierSel) {
-    const prevCashier = cashierSel.value || 'ALL';
-    const cashierNames = new Set(state.users.map((u) => u.name));
-    state.transactions.forEach((t) => {
-      if (t.staff_name) cashierNames.add(t.staff_name);
-    });
-    cashierSel.innerHTML =
-      `<option value="ALL">كل الموظفين / الكاشيرية</option>` +
-      Array.from(cashierNames)
-        .map((name) => `<option value="${escapeAttr(name)}">👤 ${escapeHtml(name)}</option>`)
-        .join('');
-    if ([...cashierSel.options].some((o) => o.value === prevCashier)) {
-      cashierSel.value = prevCashier;
-    }
+  if (tabName === 'dashboard' && mgmtUnlocked) {
+    populateDashboardFilters();
+    renderDashboard();
+  } else if (tabName === 'reports' && mgmtUnlocked) {
+    populateReportFilters();
+    renderReports();
+  } else if (tabName === 'settings' && mgmtUnlocked) {
+    renderSettings();
+  } else if (tabName === 'shift') {
+    renderShiftTab();
+  } else if (tabName === 'clients') {
+    renderClientsTab();
+  } else if (tabName === 'reservations') {
+    renderReservationsTab();
+  } else if (tabName === 'cafe') {
+    renderDirectCafePOS();
   }
 }
 
-function extractTxItems(tx) {
-  if (Array.isArray(tx.items) && tx.items.length > 0) {
-    return tx.items;
+/* ==========================================================================
+   ROOM TIMERS & SINGLE / MULTI DETAILED COST CALCULATION
+   ========================================================================== */
+function getRoomLiveMetrics(room) {
+  let singleMs = Number(room.singleElapsedMs) || 0;
+  let singleCost = Number(room.singleCost) || 0;
+  let multiMs = Number(room.multiElapsedMs) || 0;
+  let multiCost = Number(room.multiCost) || 0;
+
+  let activeSegMs = 0;
+  if (room.status === 'running' && room.startTime) {
+    activeSegMs = Math.max(0, Date.now() - new Date(room.startTime).getTime());
   }
-  const found = [];
-  const desc = tx.description || '';
-  state.menuItems.forEach((m) => {
-    const regex = new RegExp(`${escapeRegExp(m.name)}\\s*×\\s*(\\d+)`, 'g');
-    let match;
-    let totalQty = 0;
-    while ((match = regex.exec(desc)) !== null) {
-      totalQty += Number(match[1]);
-    }
-    if (totalQty > 0) {
-      found.push({
-        id: m.id,
-        name: m.name,
-        price: Number(m.price || 0),
-        qty: totalQty
-      });
-    }
-  });
-  return found;
-}
 
-function injectAdminDashboardTools() {
-  const dashContainer = document.getElementById('dashboardUnlockedContent');
-  if (!dashContainer) return;
+  const activeRate = room.mode === 'Multi' ? Number(room.multiRate) : Number(room.singleRate);
+  const activeSegCost = (activeSegMs / 3600000) * activeRate;
 
-  const canManage = hasAdminPrivilege();
-
-  // 1. Staff Accounts Manager inside Dashboard
-  let staffCard = document.getElementById('dashStaffManagerCard');
-  if (!canManage) {
-    if (staffCard) staffCard.remove();
+  if (room.mode === 'Multi') {
+    multiMs += activeSegMs;
+    multiCost += activeSegCost;
   } else {
-    if (!staffCard) {
-      staffCard = document.createElement('div');
-      staffCard.id = 'dashStaffManagerCard';
-      staffCard.className = 'card';
-      staffCard.style.marginTop = '16px';
-      staffCard.style.borderColor = 'rgba(0, 212, 255, 0.35)';
-      dashContainer.appendChild(staffCard);
-    }
-
-    staffCard.innerHTML = `
-      <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:10px;">
-        <h3 style="margin:0;">👥 إدارة الحسابات والباسوردات</h3>
-        <span class="badge badge-upcoming">إجمالي الحسابات: ${state.users.length}</span>
-      </div>
-      <p class="hint-text" style="margin-bottom:10px;">
-        حساب <strong>Admin</strong> الرئيسي موجود هنا، وتقدر من هنا تنشئ أي حساب موظف جديد، أو <strong>تعدّل اسم أو باسورد أي حساب (بما فيهم Admin)</strong>، أو <strong>تحذف</strong> أي حساب.
-      </p>
-      <div class="form-row" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:8px;margin-bottom:12px;">
-        <input type="hidden" id="dashEditUserId" value="" />
-        <input type="text" id="dashNewUserName" class="input-field" placeholder="اسم الحساب / الموظف" />
-        <input type="text" id="dashNewUserPin" class="input-field" placeholder="باسورد الدخول (مثلاً: 2222)" />
-        <div class="btn-row">
-          <button type="button" id="btnDashSaveUser" class="btn btn-primary" onclick="handleDashSaveUser()">➕ إنشاء حساب جديد</button>
-          <button type="button" id="btnDashCancelUser" class="btn btn-outline hidden" onclick="resetDashUserForm()">إلغاء</button>
-        </div>
-      </div>
-      <div id="dashUsersList">
-        ${state.users
-          .map((u) => {
-            const isAdm = isUserAdmin(u);
-            return `
-              <div class="mini-list-item">
-                <span>
-                  <strong>${escapeHtml(u.name)}</strong>
-                  <span class="badge ${isAdm ? 'badge-upcoming' : 'badge-completed'}" style="margin-right:6px;">
-                    ${isAdm ? 'مدير Admin (الرئيسي)' : 'موظف / كاشير'}
-                  </span>
-                  — الباسورد: <code>${escapeHtml(u.pin)}</code>
-                </span>
-                <div class="btn-row">
-                  <button type="button" class="btn btn-outline btn-xs" onclick="editDashUserForm('${u.id}')">✏️ تعديل / تغيير الباسورد</button>
-                  ${
-                    !isAdm
-                      ? `<button type="button" class="btn btn-danger btn-xs" onclick="deleteUser('${u.id}')">🗑️ حذف</button>`
-                      : ''
-                  }
-                </div>
-              </div>
-            `;
-          })
-          .join('')}
-      </div>
-    `;
+    singleMs += activeSegMs;
+    singleCost += activeSegCost;
   }
 
-  // 2. Full System Reset Card (Admin Only)
-  let resetCard = document.getElementById('dashResetSystemCard');
-  if (!canManage) {
-    if (resetCard) resetCard.remove();
-  } else {
-    if (!resetCard) {
-      resetCard = document.createElement('div');
-      resetCard.id = 'dashResetSystemCard';
-      resetCard.className = 'card';
-      resetCard.style.marginTop = '16px';
-      resetCard.style.border = '1px solid rgba(239, 68, 68, 0.5)';
-      resetCard.style.background = 'rgba(239, 68, 68, 0.06)';
-      dashContainer.appendChild(resetCard);
-    }
-
-    resetCard.innerHTML = `
-      <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px;">
-        <div>
-          <h3 style="margin:0 0 4px 0;color:#f87171;">⚠️ تصفير السيستم بالكامل (Reset System)</h3>
-          <p class="hint-text" style="margin:0;">متاح لحساب <strong>Admin</strong> فقط: لمسح بيانات التجربة (الفواتير، الورديات، المصروفات، النوتة، الحجوزات) وتجهيز السيستم للبدء الفعلي على نظافة.</p>
-        </div>
-        <button type="button" class="btn btn-danger" onclick="openResetSystemModal()">🗑️ تصفير السيستم الآن</button>
-      </div>
-    `;
-  }
-}
-
-window.editDashUserForm = (id) => {
-  const u = state.users.find((x) => String(x.id) === String(id));
-  if (!u) return;
-  document.getElementById('dashEditUserId').value = u.id;
-  document.getElementById('dashNewUserName').value = u.name || '';
-  document.getElementById('dashNewUserPin').value = u.pin || '';
-  document.getElementById('btnDashSaveUser').textContent = isUserAdmin(u)
-    ? '💾 حفظ تعديل حساب Admin'
-    : '💾 حفظ تعديل الحساب';
-  document.getElementById('btnDashCancelUser').classList.remove('hidden');
-  document.getElementById('dashNewUserName').focus();
-};
-
-window.resetDashUserForm = () => {
-  const idEl = document.getElementById('dashEditUserId');
-  if (!idEl) return;
-  idEl.value = '';
-  document.getElementById('dashNewUserName').value = '';
-  document.getElementById('dashNewUserPin').value = '';
-  document.getElementById('btnDashSaveUser').textContent = '➕ إنشاء حساب جديد';
-  document.getElementById('btnDashCancelUser').classList.add('hidden');
-};
-
-window.handleDashSaveUser = async () => {
-  if (!hasAdminPrivilege()) {
-    return showToast('هذه الصلاحية متاحة لحساب Admin فقط!', 'error');
-  }
-  const editId = document.getElementById('dashEditUserId').value;
-  const name = document.getElementById('dashNewUserName').value.trim();
-  const pin = document.getElementById('dashNewUserPin').value.trim();
-  if (!name || !pin) return showToast('أدخل الاسم والباسورد', 'warning');
-
-  if (editId) {
-    const target = state.users.find((u) => String(u.id) === String(editId));
-    if (!target) return;
-
-    if (isUserAdmin(target)) {
-      const ok = await updateAdminPasswordEverywhere(pin, name);
-      if (!ok) return;
-      resetDashUserForm();
-      renderAll();
-      showToast('تم تحديث اسم وباسورد Admin بنجاح 🔐', 'success');
-      return;
-    }
-
-    const duplicate = state.users.find((u) => String(u.pin) === pin && String(u.id) !== String(editId));
-    if (duplicate) {
-      return showToast(`هذا الباسورد مستخدم بالفعل لحساب "${duplicate.name}"`, 'error');
-    }
-    target.name = name;
-    target.pin = pin;
-    target.role = 'staff';
-    await persistUsersEverywhere();
-    await dbMutate('users', 'update', { name, pin, role: 'staff' }, 'id', target.id);
-    resetDashUserForm();
-  } else {
-    const duplicate = state.users.find((u) => String(u.pin) === pin);
-    if (duplicate) {
-      return showToast(`هذا الباسورد مستخدم بالفعل لحساب "${duplicate.name}"`, 'error');
-    }
-    const u = { id: 'usr-' + Date.now(), name, pin, role: 'staff' };
-    state.users.push(u);
-    await persistUsersEverywhere();
-    await dbMutate('users', 'insert', u);
-    resetDashUserForm();
-  }
-
-  populateLoginUserSelect();
-  renderAll();
-  showToast('تم حفظ بيانات الحساب بنجاح ✅', 'success');
-};
-
-function renderDashboard() {
-  if (!isMgmtUnlocked) return;
-  populateDashboardFilters();
-
-  const openShift = getOpenShift();
-  const currentDay = openShift ? getShiftBusinessDate(openShift) : getLocalDateStr();
-
-  const dayFilter = document.getElementById('dashFilterBusinessDay')?.value || 'CURRENT';
-  const dateFrom = document.getElementById('dashFilterDateFrom')?.value || '';
-  const dateTo = document.getElementById('dashFilterDateTo')?.value || '';
-  const roomFilter = document.getElementById('dashFilterRoom')?.value || 'ALL';
-  const drinkFilter = document.getElementById('dashFilterDrink')?.value || 'ALL';
-  const cashierFilter = document.getElementById('dashFilterCashier')?.value || 'ALL';
-
-  const filteredTxs = state.transactions.filter((t) => {
-    const txDay = getTxBusinessDate(t);
-
-    if (dayFilter === 'CURRENT') {
-      if (txDay !== currentDay) return false;
-    } else if (dayFilter !== 'ALL') {
-      if (txDay !== dayFilter) return false;
-    }
-
-    if (dateFrom && txDay < dateFrom) return false;
-    if (dateTo && txDay > dateTo) return false;
-
-    if (cashierFilter !== 'ALL' && (t.staff_name || '') !== cashierFilter) {
-      return false;
-    }
-
-    if (roomFilter === 'ROOMS_ONLY') {
-      if (t.type !== 'room') return false;
-    } else if (roomFilter === 'CAFE_ONLY') {
-      if (t.type !== 'cafe' && t.type !== 'table') return false;
-    } else if (roomFilter.startsWith('room:')) {
-      const targetRoomName = roomFilter.slice(5);
-      if (t.type !== 'room' || !(t.description || '').startsWith(targetRoomName)) return false;
-    } else if (roomFilter.startsWith('table:')) {
-      const targetTableName = roomFilter.slice(6);
-      if (t.type !== 'table' || !(t.description || '').startsWith(targetTableName)) return false;
-    }
-
-    if (drinkFilter !== 'ALL') {
-      const items = extractTxItems(t);
-      if (!items.some((it) => it.name === drinkFilter)) return false;
-    }
-
-    return true;
-  });
-
-  let filteredTotalSales = 0;
-  let filteredRoomsRev = 0;
-  let filteredDrinksRev = 0;
-  let filteredNotah = 0;
-  let filteredNotahCollected = 0;
-  let filteredVfCash = 0;
-
-  const roomBreakdown = {};
-  const drinkBreakdown = {};
-
-  filteredTxs.forEach((t) => {
-    const amt = Number(t.amount || 0);
-    const items = extractTxItems(t);
-
-    if (drinkFilter !== 'ALL') {
-      const matchedItems = items.filter((it) => it.name === drinkFilter);
-      const itemRev = matchedItems.reduce((s, it) => s + Number(it.price) * Number(it.qty), 0);
-      filteredTotalSales += itemRev;
-      filteredDrinksRev += itemRev;
-    } else {
-      if (t.type === 'room' || t.type === 'cafe' || t.type === 'table') {
-        filteredTotalSales += amt;
-      } else if (t.type === 'notah_collection') {
-        filteredNotahCollected += amt;
-      }
-
-      if (t.type === 'room') {
-        const ordersPart = Number(t.orders_cost || items.reduce((s, it) => s + Number(it.price) * Number(it.qty), 0));
-        const timePart = t.time_cost !== undefined ? Number(t.time_cost) : Math.max(0, amt - ordersPart);
-        filteredRoomsRev += timePart;
-        filteredDrinksRev += ordersPart;
-
-        const roomLabel = (t.description || '').split('(')[0].trim() || 'غرفة';
-        if (!roomBreakdown[roomLabel]) roomBreakdown[roomLabel] = { count: 0, revenue: 0 };
-        roomBreakdown[roomLabel].count += 1;
-        roomBreakdown[roomLabel].revenue += timePart;
-      } else if (t.type === 'cafe' || t.type === 'table') {
-        filteredDrinksRev += amt;
-      }
-    }
-
-    items.forEach((it) => {
-      if (drinkFilter !== 'ALL' && it.name !== drinkFilter) return;
-      if (!drinkBreakdown[it.name]) drinkBreakdown[it.name] = { qty: 0, revenue: 0 };
-      drinkBreakdown[it.name].qty += Number(it.qty);
-      drinkBreakdown[it.name].revenue += Number(it.price) * Number(it.qty);
-    });
-
-    filteredNotah += Number(t.notah_amount || 0);
-    filteredVfCash += Number(t.vfcash_amount || 0);
-  });
-
-  const drawerCash = openShift ? computeShiftStats(openShift).expectedDrawer : 0;
-  const runningRooms = state.rooms.filter((r) => r.status === 'running');
-  const openTables = state.tables.filter((t) => t.status === 'open');
-  const totalMarketNotah = state.clients.reduce((s, c) => s + Number(c.notah_balance || 0), 0);
-
-  document.getElementById('dashTodayTotal').textContent = `${filteredTotalSales} ج.م`;
-  document.getElementById('dashFilteredRoomsRev').textContent = `${filteredRoomsRev} ج.م`;
-  document.getElementById('dashFilteredDrinksRev').textContent = `${filteredDrinksRev} ج.م`;
-  document.getElementById('dashDrawerCash').textContent = `${drawerCash} ج.م`;
-  document.getElementById('dashTodayNotah').textContent = `${filteredNotah} ج.م`;
-  document.getElementById('dashTodayNotahCollected').textContent = `${filteredNotahCollected} ج.م`;
-  document.getElementById('dashTodayVfCash').textContent = `${filteredVfCash} ج.م`;
-  document.getElementById('dashActiveRoomsCount').textContent = `${runningRooms.length}/${state.rooms.length}`;
-  document.getElementById('dashActiveTablesCount').textContent = `${openTables.length}/${state.tables.length}`;
-  document.getElementById('dashMarketNotah').textContent = `${totalMarketNotah} ج.م`;
-
-  const summaryTag = document.getElementById('dashFilterSummaryTag');
-  if (summaryTag) {
-    const parts = [];
-    if (dayFilter === 'CURRENT') parts.push(`اليوم الحالي (${currentDay})`);
-    else if (dayFilter === 'ALL') parts.push('كل الأيام');
-    else parts.push(`يوم ${dayFilter}`);
-    if (roomFilter !== 'ALL') parts.push(roomFilter.replace('room:', '').replace('table:', ''));
-    if (drinkFilter !== 'ALL') parts.push(drinkFilter);
-    if (cashierFilter !== 'ALL') parts.push(cashierFilter);
-    summaryTag.textContent = parts.join(' • ');
-  }
-
-  const breakdownBody = document.getElementById('dashAnalyticsBreakdownBody');
-  if (breakdownBody) {
-    const rows = [];
-    Object.entries(roomBreakdown)
-      .sort((a, b) => b[1].revenue - a[1].revenue)
-      .forEach(([name, data]) => {
-        rows.push(`
-          <tr>
-            <td><strong>🎮 ${escapeHtml(name)}</strong></td>
-            <td><span class="badge badge-upcoming">لعب / غرفة</span></td>
-            <td>${data.count} جلسة</td>
-            <td><strong style="color:var(--ps-cyan)">${data.revenue} ج.م</strong></td>
-          </tr>
-        `);
-      });
-
-    Object.entries(drinkBreakdown)
-      .sort((a, b) => b[1].revenue - a[1].revenue)
-      .forEach(([name, data]) => {
-        rows.push(`
-          <tr>
-            <td><strong>☕ ${escapeHtml(name)}</strong></td>
-            <td><span class="badge badge-completed">مشروب / صنف</span></td>
-            <td>${data.qty} قطعة</td>
-            <td><strong style="color:var(--success)">${data.revenue} ج.م</strong></td>
-          </tr>
-        `);
-      });
-
-    breakdownBody.innerHTML =
-      rows.length === 0
-        ? `<tr><td colspan="4" style="text-align:center;color:var(--text-muted)">لا توجد بيانات مطابقة للفلتر المختار</td></tr>`
-        : rows.join('');
-  }
-
-  const unitsEl = document.getElementById('dashLiveUnitsGrid');
-  if (unitsEl) {
-    const roomChips = state.rooms.map((r) => {
-      const busy = r.status === 'running' && r.session;
-      const m = busy ? calculateSessionMetrics(r) : null;
-      return `
-        <div class="dash-unit-chip ${busy ? 'busy' : ''}" onclick="switchTab('rooms')">
-          <div style="display:flex;justify-content:space-between;">
-            <strong>🎮 ${escapeHtml(r.name)}</strong>
-            <span style="font-size:0.75rem;color:${busy ? 'var(--ps-cyan)' : 'var(--success)'}">${busy ? r.session.mode : 'متاحة'}</span>
-          </div>
-          <div style="font-size:0.8rem;color:var(--text-muted);margin-top:4px;">
-            ${busy ? `${escapeHtml(r.session.game)} • <strong style="color:#fff">${m.totalCost} ج</strong>` : 'جاهزة للتشغيل'}
-          </div>
-        </div>
-      `;
-    });
-
-    const tableChips = state.tables.map((t) => {
-      const open = t.status === 'open' && t.session;
-      const total = open ? (t.session.orders || []).reduce((s, o) => s + o.price * o.qty, 0) : 0;
-      return `
-        <div class="dash-unit-chip ${open ? 'table-busy' : ''}" onclick="switchTab('tables')">
-          <div style="display:flex;justify-content:space-between;">
-            <strong>🪑 ${escapeHtml(t.name)}</strong>
-            <span style="font-size:0.75rem;color:${open ? 'var(--warning)' : 'var(--success)'}">${open ? 'مفتوحة' : 'متاحة'}</span>
-          </div>
-          <div style="font-size:0.8rem;color:var(--text-muted);margin-top:4px;">
-            ${open ? `طلبات: <strong style="color:#fff">${total} ج</strong>` : 'فارغة'}
-          </div>
-        </div>
-      `;
-    });
-
-    unitsEl.innerHTML = [...roomChips, ...tableChips].join('');
-  }
-
-  const topItemsEl = document.getElementById('dashTopItemsList');
-  if (topItemsEl) {
-    const sortedItems = Object.entries(drinkBreakdown)
-      .sort((a, b) => b[1].qty - a[1].qty)
-      .slice(0, 6);
-    topItemsEl.innerHTML =
-      sortedItems.length === 0
-        ? `<p class="hint-text">ستظهر هنا أكثر الأصناف طلباً حسب الفلتر</p>`
-        : sortedItems
-            .map(
-              ([name, data]) => `
-            <div class="mini-list-item">
-              <span>☕ ${escapeHtml(name)}</span>
-              <strong>${data.qty} قطعة (${data.revenue} ج)</strong>
-            </div>
-          `
-            )
-            .join('');
-  }
-
-  const upResEl = document.getElementById('dashUpcomingResList');
-  if (upResEl) {
-    const upcoming = state.reservations.filter((r) => r.status === 'Upcoming').slice(0, 4);
-    upResEl.innerHTML =
-      upcoming.length === 0
-        ? `<p class="hint-text">لا توجد حجوزات قادمة حالياً</p>`
-        : upcoming
-            .map(
-              (r) => `
-            <div class="mini-list-item">
-              <span><strong>${escapeHtml(r.client_name)}</strong> (${escapeHtml(r.game_name)})</span>
-              <span style="color:var(--ps-cyan);font-size:0.8rem">${formatDateTime(r.res_datetime)}</span>
-            </div>
-          `
-            )
-            .join('');
-  }
-
-  const recentBody = document.getElementById('dashRecentTxBody');
-  if (recentBody) {
-    recentBody.innerHTML =
-      filteredTxs.length === 0
-        ? `<tr><td colspan="5" style="text-align:center;color:var(--text-muted)">لا توجد فواتير مطابقة للفلتر</td></tr>`
-        : filteredTxs
-            .slice(0, 50)
-            .map(
-              (t) => `
-            <tr>
-              <td><span style="color:var(--ps-cyan);font-weight:700">${getTxBusinessDate(t)}</span> • ${formatTimeShort(t.created_at)}</td>
-              <td><strong>${escapeHtml(t.description)}</strong></td>
-              <td><strong style="color:var(--success)">${t.amount} ج.م</strong></td>
-              <td>${escapeHtml(t.payment_summary || '')}</td>
-              <td>${escapeHtml(t.staff_name || '-')}</td>
-            </tr>
-          `
-            )
-            .join('');
-  }
-
-  injectAdminDashboardTools();
-}
-
-/* ================= 5B. ADMIN-ONLY FULL SYSTEM RESET ================= */
-
-function ensureResetModalExists() {
-  if (document.getElementById('modalResetSystem')) return;
-  const modalHtml = `
-    <div id="modalResetSystem" class="modal-backdrop hidden">
-      <div class="modal-card" style="max-width:480px;border:1px solid rgba(239,68,68,0.6);">
-        <div class="modal-header">
-          <h3 style="color:#f87171;">⚠️ تصفير السيستم بالكامل (Reset System)</h3>
-          <button type="button" class="close-btn" onclick="closeModal('modalResetSystem')">✕</button>
-        </div>
-        <div class="modal-body">
-          <p style="font-size:0.9rem;line-height:1.6;margin-bottom:12px;">
-            هذا الإجراء سيمسح <strong>جميع بيانات التجربة</strong> نهائياً (الفواتير، الورديات، المصروفات، حسابات النوتة، والحجوزات) ويُعيد جميع الغرف والترابيزات إلى وضع <strong>متاحة</strong> ليصبح السيستم نظيفاً وجاهزاً للعمل الفعلي.
-          </p>
-
-          <div style="background:rgba(255,255,255,0.04);padding:10px 12px;border-radius:10px;margin-bottom:12px;display:flex;flex-direction:column;gap:8px;font-size:0.86rem;">
-            <label style="display:flex;align-items:center;gap:8px;cursor:pointer;">
-              <input type="checkbox" checked disabled />
-              <span>مسح جميع الفواتير والورديات والمصروفات والحجوزات والنوتة وتصفير الغرف والترابيزات</span>
-            </label>
-            <label style="display:flex;align-items:center;gap:8px;cursor:pointer;">
-              <input type="checkbox" id="resetKeepSingleAdminCheck" checked />
-              <span>إعادة ضبط الحسابات على حساب <strong>Admin واحد فقط بباسورد 1234</strong></span>
-            </label>
-            <label style="display:flex;align-items:center;gap:8px;cursor:pointer;">
-              <input type="checkbox" id="resetFactoryWipeMenuRooms" />
-              <span>مسح الغرف والمنيو أيضاً (تصفير شامل من الصفر)</span>
-            </label>
-          </div>
-
-          <label style="display:block;margin-bottom:6px;font-size:0.85rem;">أدخل باسورد الإدارة للتأكيد:</label>
-          <input type="password" id="resetSystemConfirmPass" class="input-field" placeholder="اكتب باسورد الإدارة الحالي" />
-          <div id="resetSystemError" class="hidden" style="color:#f87171;font-size:0.82rem;margin-top:6px;">باسورد الإدارة غير صحيح!</div>
-        </div>
-        <div class="modal-footer" style="display:flex;gap:8px;justify-content:flex-end;margin-top:14px;">
-          <button type="button" class="btn btn-outline" onclick="closeModal('modalResetSystem')">إلغاء</button>
-          <button type="button" id="btnExecuteResetSystem" class="btn btn-danger" onclick="executeFullSystemReset()">🗑️ تنفيذ التصفير النهائي</button>
-        </div>
-      </div>
-    </div>
-  `;
-  document.body.insertAdjacentHTML('beforeend', modalHtml);
-}
-
-window.openResetSystemModal = () => {
-  if (!hasAdminPrivilege()) {
-    return showToast('هذه الصلاحية متاحة لحساب Admin فقط!', 'error');
-  }
-  ensureResetModalExists();
-  document.getElementById('resetSystemConfirmPass').value = '';
-  document.getElementById('resetSystemError').classList.add('hidden');
-  openModal('modalResetSystem');
-  setTimeout(() => document.getElementById('resetSystemConfirmPass')?.focus(), 100);
-};
-
-async function clearCloudTableAll(tableName, cachedRows = []) {
-  if (!sbClient || !navigator.onLine) return;
-  try {
-    const { data } = await sbClient.from(tableName).select('id');
-    if (Array.isArray(data)) {
-      for (const row of data) {
-        if (row && row.id !== undefined && row.id !== null) {
-          await sbClient.from(tableName).delete().eq('id', row.id);
-        }
-      }
-    }
-  } catch (_) {}
-  for (const row of cachedRows) {
-    if (row && row.id !== undefined && row.id !== null) {
-      try {
-        await sbClient.from(tableName).delete().eq('id', row.id);
-      } catch (_) {}
-    }
-  }
-}
-
-window.executeFullSystemReset = async () => {
-  if (!hasAdminPrivilege()) {
-    return showToast('هذه الصلاحية متاحة لحساب Admin فقط!', 'error');
-  }
-
-  const entered = (document.getElementById('resetSystemConfirmPass')?.value || '').trim();
-  const adminUser = state.users.find((u) => isUserAdmin(u));
-  const validPasswords = [
-    String(state.settings.mgmtPassword || '1234'),
-    adminUser ? String(adminUser.pin) : '1234'
-  ];
-
-  if (!validPasswords.includes(entered)) {
-    document.getElementById('resetSystemError')?.classList.remove('hidden');
-    return;
-  }
-
-  const btn = document.getElementById('btnExecuteResetSystem');
-  if (btn) {
-    btn.disabled = true;
-    btn.textContent = '⏳ جاري تصفير السيستم...';
-  }
-
-  const resetUsersToAdminOnly = document.getElementById('resetKeepSingleAdminCheck')?.checked ?? true;
-  const factoryWipeRoomsMenu = document.getElementById('resetFactoryWipeMenuRooms')?.checked ?? false;
-
-  localStorage.removeItem(STORAGE_KEYS.QUEUE);
-  updateQueueBadge();
-
-  await clearCloudTableAll('transactions', state.transactions);
-  await clearCloudTableAll('expenses', state.expenses);
-  await clearCloudTableAll('shifts', state.shifts);
-  await clearCloudTableAll('reservations', state.reservations);
-  await clearCloudTableAll('clients', state.clients);
-
-  state.transactions = [];
-  state.expenses = [];
-  state.shifts = [];
-  state.reservations = [];
-  state.clients = [];
-  state.handovers = [];
-  state.shiftDays = {};
-  directCart = {};
-  roomPosCart = {};
-
-  await saveSystemStateKey('arena_handovers', []);
-  await saveSystemStateKey('arena_shift_days', {});
-
-  if (factoryWipeRoomsMenu) {
-    await clearCloudTableAll('rooms', state.rooms);
-    await clearCloudTableAll('menu_items', state.menuItems);
-    state.rooms = [];
-    state.menuItems = [];
-    state.menuMeta = {};
-    state.tables = [1, 2, 3, 4, 5, 6].map((n) => ({
-      id: `tbl-${n}`,
-      name: `ترابيزة ${n}`,
-      status: 'idle',
-      session: null
-    }));
-    await saveSystemStateKey('arena_menu_meta', {});
-    await saveSystemStateKey('arena_tables', state.tables);
-  } else {
-    for (const r of state.rooms) {
-      r.status = 'idle';
-      r.session = null;
-      await dbMutate('rooms', 'update', { status: 'idle', session: null }, 'id', r.id);
-    }
-    state.tables.forEach((t) => {
-      t.status = 'idle';
-      t.session = null;
-    });
-    await saveSystemStateKey('arena_tables', state.tables);
-  }
-
-  if (resetUsersToAdminOnly) {
-    await purgeCloudUsersTable();
-    const singleAdmin = { id: 'admin-default', name: 'Admin', pin: '1234', role: 'admin' };
-    state.users = [singleAdmin];
-    state.settings.mgmtPassword = '1234';
-    await persistUsersEverywhere();
-    await saveSystemStateKey('arena_settings', state.settings);
-    await dbMutate('users', 'upsert', singleAdmin);
-
-    activeUser = singleAdmin;
-    isMgmtUnlocked = true;
-    sessionStorage.setItem(STORAGE_KEYS.USER, JSON.stringify(singleAdmin));
-    const badgeEl = document.getElementById('currentUserBadge');
-    if (badgeEl) badgeEl.textContent = `${singleAdmin.name} (مدير Admin)`;
-  }
-
-  saveLocalCache();
-  populateLoginUserSelect();
-
-  if (btn) {
-    btn.disabled = false;
-    btn.textContent = '🗑️ تنفيذ التصفير النهائي';
-  }
-
-  closeModal('modalResetSystem');
-  renderAll();
-  showToast('تم تصفير السيستم بالكامل بنجاح! السيستم الآن نظيف وجاهز للشغل ✅', 'success');
-};
-
-/* ================= 5C. FIX / CANCEL WRONG BUSINESS DAY ================= */
-
-async function handleFixWrongBusinessDay() {
-  const wrongDay = document.getElementById('dashWrongDaySelect')?.value || '';
-  const correctDay = document.getElementById('dashCorrectDayInput')?.value || '';
-  const keepActiveTimers = document.getElementById('dashKeepActiveTimers')?.checked ?? true;
-
-  if (!wrongDay) return showToast('اختر اليوم الغلط أولاً', 'warning');
-  if (!correctDay) return showToast('اختر اليوم الصح اللي هيتفتح مكانه', 'warning');
-  if (wrongDay === correctDay) {
-    return showToast('اليوم الصح هو نفس اليوم المختار! اختر تاريخ مختلف للتصحيح.', 'warning');
-  }
-
-  const ok = confirm(
-    `تأكيد التصحيح:\nسيتم إلغاء ومسح يوم (${wrongDay}) بالكامل من السجلات والتقارير كأنه لم يُفتح، وفتح يوم (${correctDay}) مكانه.\nهل تريد المتابعة؟`
-  );
-  if (!ok) return;
-
-  const wrongShifts = state.shifts.filter((s) => getShiftBusinessDate(s) === wrongDay);
-  const wrongShiftIds = new Set(wrongShifts.map((s) => String(s.id)));
-  const wasOpenShift = wrongShifts.find((s) => s.status === 'open');
-  const carriedStartCash = wasOpenShift ? Number(wasOpenShift.start_cash || 0) : 0;
-
-  const txsToDelete = state.transactions.filter(
-    (t) => getTxBusinessDate(t) === wrongDay || wrongShiftIds.has(String(t.shift_id))
-  );
-  state.transactions = state.transactions.filter(
-    (t) => getTxBusinessDate(t) !== wrongDay && !wrongShiftIds.has(String(t.shift_id))
-  );
-  for (const t of txsToDelete) {
-    await dbMutate('transactions', 'delete', null, 'id', t.id);
-  }
-
-  const expsToDelete = state.expenses.filter(
-    (e) => getExpBusinessDate(e) === wrongDay || wrongShiftIds.has(String(e.shift_id))
-  );
-  state.expenses = state.expenses.filter(
-    (e) => getExpBusinessDate(e) !== wrongDay && !wrongShiftIds.has(String(e.shift_id))
-  );
-  for (const e of expsToDelete) {
-    await dbMutate('expenses', 'delete', null, 'id', e.id);
-  }
-
-  state.handovers = state.handovers.filter((h) => !wrongShiftIds.has(String(h.shift_id)));
-  await saveSystemStateKey('arena_handovers', state.handovers);
-
-  state.shifts = state.shifts.filter((s) => !wrongShiftIds.has(String(s.id)));
-  for (const s of wrongShifts) {
-    delete state.shiftDays[String(s.id)];
-    await dbMutate('shifts', 'delete', null, 'id', s.id);
-  }
-
-  if (!keepActiveTimers) {
-    for (const r of state.rooms) {
-      if (r.status === 'running') {
-        r.status = 'idle';
-        r.session = null;
-        await dbMutate('rooms', 'update', { status: 'idle', session: null }, 'id', r.id);
-      }
-    }
-    state.tables.forEach((t) => {
-      t.status = 'idle';
-      t.session = null;
-    });
-    await saveSystemStateKey('arena_tables', state.tables);
-  }
-
-  const existingOpen = getOpenShift();
-  if (!existingOpen) {
-    const newShift = {
-      id: 'sh-' + Date.now(),
-      staff_name: activeUser.name,
-      business_date: correctDay,
-      start_time: new Date().toISOString(),
-      end_time: null,
-      start_cash: carriedStartCash,
-      end_cash: 0,
-      expected_cash: carriedStartCash,
-      status: 'open',
-      total_notah_sales: 0,
-      total_notah_collections: 0
-    };
-    state.shifts.unshift(newShift);
-    state.shiftDays[String(newShift.id)] = correctDay;
-    await dbMutate('shifts', 'insert', newShift);
-  } else {
-    existingOpen.business_date = correctDay;
-    state.shiftDays[String(existingOpen.id)] = correctDay;
-    await dbMutate('shifts', 'update', { business_date: correctDay }, 'id', existingOpen.id);
-  }
-
-  await saveSystemStateKey('arena_shift_days', state.shiftDays);
-
-  const daySel = document.getElementById('dashFilterBusinessDay');
-  if (daySel) daySel.value = 'CURRENT';
-
-  renderAll();
-  showToast(`تم إلغاء يوم (${wrongDay}) نهائياً وفتح يوم (${correctDay}) مكانه ✅`, 'success');
-}
-
-/* ================= 6. SMART PRODUCT SVG ICONS ================= */
-
-function detectIconKey(item) {
-  if (item.icon && item.icon !== 'auto') return item.icon;
-  const n = (item.name || '').toLowerCase();
-  const c = (item.category || '').toLowerCase();
-
-  if (/بيبسي|كولا|سبرايت|سفن|ميرندا|فانتا|ريد|كانز|صودا|pepsi|cola|sprite|7up|fanta|soda|can/.test(n)) return 'can';
-  if (/مياه|ميه|water/.test(n)) return 'water';
-  if (/شاي|ينسون|نعناع|كركديه|قرفة|جنزبيل|tea|mint|herbs/.test(n)) return 'tea';
-  if (/آيس|ايس|ميلك|شيك|سموزي|فرابيه|iced|shake|smoothie|frappe/.test(n + ' ' + c)) return 'iced';
-  if (/عصير|موهيتو|ليمون|مانجو|فراولة|برتقال|juice|mojito/.test(n)) return 'juice';
-  if (/شيبسي|سناكس|فشار|مكسرات|لب|بسكوت|chips|snack|popcorn/.test(n)) return 'snack';
-  if (/وافل|مولتن|كيك|دونات|حلو|شوكولاتة|كرواسون|waffle|cake|sweet|chocolate/.test(n + ' ' + c)) return 'sweet';
-  if (/قهوة|إسبريسو|اسبريسو|لاتيه|كابتشينو|موكا|امريكان|نسكافيه|coffee|espresso|latte|cappuccino|mocha/.test(n + ' ' + c)) return 'coffee';
-  return 'coffee';
-}
-
-function getSmartItemSvg(item) {
-  const key = detectIconKey(item);
-  const svgs = {
-    can: `<svg class="pos-tile-svg" viewBox="0 0 64 64" fill="none">
-      <rect x="20" y="10" width="24" height="44" rx="5" fill="#0284c7" stroke="#38bdf8" stroke-width="2"/>
-      <rect x="22" y="7" width="20" height="4" rx="2" fill="#cbd5e1"/>
-      <path d="M20 26 Q32 32 44 26 L44 38 Q32 32 20 38 Z" fill="#ef4444"/>
-      <circle cx="32" cy="32" r="5" fill="#ffffff" opacity="0.9"/>
-    </svg>`,
-    water: `<svg class="pos-tile-svg" viewBox="0 0 64 64" fill="none">
-      <rect x="26" y="7" width="12" height="5" rx="2" fill="#0284c7"/>
-      <path d="M24 12 L40 12 L43 22 L43 53 C43 55 41 57 39 57 L25 57 C23 57 21 55 21 53 L21 22 Z" fill="#bae6fd" stroke="#38bdf8" stroke-width="2"/>
-      <rect x="21" y="30" width="22" height="12" fill="#0ea5e9" opacity="0.85"/>
-    </svg>`,
-    coffee: `<svg class="pos-tile-svg" viewBox="0 0 64 64" fill="none">
-      <path d="M16 24 H44 V40 C44 48 38 53 30 53 C22 53 16 48 16 40 Z" fill="#78350f" stroke="#d97706" stroke-width="2"/>
-      <path d="M44 27 H49 C52 27 54 30 54 33 C54 36 52 39 49 39 H44" stroke="#d97706" stroke-width="3"/>
-      <ellipse cx="30" cy="24" rx="14" ry="3.5" fill="#b45309"/>
-      <path d="M24 17 Q26 12 24 9 M31 17 Q33 12 31 9 M38 17 Q40 12 38 9" stroke="#94a3b8" stroke-width="2" stroke-linecap="round"/>
-    </svg>`,
-    tea: `<svg class="pos-tile-svg" viewBox="0 0 64 64" fill="none">
-      <path d="M18 22 H42 L39 52 H21 Z" fill="#d97706" fill-opacity="0.85" stroke="#fbbf24" stroke-width="2"/>
-      <path d="M42 26 H47 C50 26 51 29 51 32 C51 35 50 38 47 38 H41" stroke="#fbbf24" stroke-width="2.5"/>
-      <line x1="30" y1="20" x2="35" y2="33" stroke="#fef3c7" stroke-width="1.5"/>
-      <rect x="32" y="32" width="6" height="7" rx="1" fill="#ef4444"/>
-    </svg>`,
-    iced: `<svg class="pos-tile-svg" viewBox="0 0 64 64" fill="none">
-      <path d="M20 20 H44 L40 55 H24 Z" fill="#c084fc" fill-opacity="0.7" stroke="#e879f9" stroke-width="2"/>
-      <path d="M18 20 C18 13 46 13 46 20 Z" fill="#f8fafc"/>
-      <line x1="34" y1="7" x2="31" y2="26" stroke="#38bdf8" stroke-width="3" stroke-linecap="round"/>
-      <rect x="25" y="30" width="6" height="6" rx="1" fill="#fff" opacity="0.6"/>
-      <rect x="33" y="38" width="6" height="6" rx="1" fill="#fff" opacity="0.6"/>
-    </svg>`,
-    juice: `<svg class="pos-tile-svg" viewBox="0 0 64 64" fill="none">
-      <path d="M21 22 H43 L40 54 H24 Z" fill="#f97316" stroke="#fdba74" stroke-width="2"/>
-      <circle cx="43" cy="21" r="7" fill="#facc15" stroke="#fef08a" stroke-width="2"/>
-      <line x1="28" y1="9" x2="31" y2="34" stroke="#22c55e" stroke-width="3" stroke-linecap="round"/>
-    </svg>`,
-    snack: `<svg class="pos-tile-svg" viewBox="0 0 64 64" fill="none">
-      <rect x="17" y="12" width="30" height="42" rx="4" fill="#ef4444" stroke="#fca5a5" stroke-width="2"/>
-      <circle cx="32" cy="33" r="9" fill="#facc15"/>
-      <path d="M17 17 H47 M17 49 H47" stroke="#fde047" stroke-width="2"/>
-    </svg>`,
-    sweet: `<svg class="pos-tile-svg" viewBox="0 0 64 64" fill="none">
-      <rect x="15" y="24" width="34" height="22" rx="6" fill="#d97706" stroke="#fbbf24" stroke-width="2"/>
-      <path d="M20 24 Q26 32 32 24 Q38 32 44 24" fill="#451a03"/>
-      <circle cx="32" cy="19" r="5" fill="#ef4444"/>
-    </svg>`
-  };
-  return svgs[key] || svgs.coffee;
-}
-
-/* ================= 7. PS5 ROOM CARDS & LIVE TIMER ================= */
-
-function startLiveTicker() {
-  if (liveTimerInterval) clearInterval(liveTimerInterval);
-  liveTimerInterval = setInterval(() => {
-    updateLiveRoomTimers();
-  }, 1000);
-}
-
-function calculateSessionMetrics(room) {
-  const s = room.session;
-  if (!s) return { elapsedSec: 0, remainingSec: null, timeCost: 0, ordersCost: 0, totalCost: 0, isExpired: false };
-
-  const now = Date.now();
-  const activeMs = s.isPaused
-    ? 0
-    : Math.max(0, now - Number(s.segmentStart || s.startTime || now));
-
-  const currentRate = s.mode === 'Multi' ? Number(room.multi_rate) : Number(room.single_rate);
-  const currentSegmentCost = (activeMs / 3600000) * currentRate;
-  const timeCost = Math.ceil(Number(s.accumulatedCost || 0) + currentSegmentCost);
-
-  const totalElapsedSec = Math.floor((Number(s.accumulatedElapsedMs || 0) + activeMs) / 1000);
-  const ordersCost = (s.orders || []).reduce((sum, o) => sum + Number(o.price) * Number(o.qty), 0);
-
-  let remainingSec = null;
+  const totalMs = singleMs + multiMs;
+  const rawTimeCost = singleCost + multiCost;
+  const roundedSingleCost = Math.round(singleCost);
+  const roundedMultiCost = Math.round(multiCost);
+  const roundedTimeCost = Math.round(rawTimeCost);
+
+  const ordersCost = (room.orders || []).reduce((sum, o) => sum + (Number(o.price) * Number(o.qty)), 0);
+  const grandTotal = roundedTimeCost + ordersCost;
+
+  let remainingMs = null;
   let isExpired = false;
-  if (s.timeType === 'fixed' && Number(s.fixedMinutes) > 0) {
-    const targetSec = Number(s.fixedMinutes) * 60;
-    remainingSec = targetSec - totalElapsedSec;
-    if (remainingSec <= 0) isExpired = true;
+  if (room.timeType === 'fixed' && room.fixedMinutes) {
+    const targetMs = Number(room.fixedMinutes) * 60000;
+    remainingMs = targetMs - totalMs;
+    if (remainingMs <= 0 && (room.status === 'running' || room.status === 'paused')) {
+      isExpired = true;
+    }
   }
 
   return {
-    elapsedSec: totalElapsedSec,
-    remainingSec,
-    timeCost,
+    totalMs,
+    singleMs,
+    singleCost: roundedSingleCost,
+    multiMs,
+    multiCost: roundedMultiCost,
+    timeCost: roundedTimeCost,
     ordersCost,
-    totalCost: timeCost + ordersCost,
+    grandTotal,
+    remainingMs,
     isExpired
   };
 }
 
-function formatDuration(totalSeconds) {
-  const abs = Math.abs(Math.floor(totalSeconds));
-  const h = Math.floor(abs / 3600);
-  const m = Math.floor((abs % 3600) / 60);
-  const s = abs % 60;
-  const pad = (n) => String(n).padStart(2, '0');
-  return `${pad(h)}:${pad(m)}:${pad(s)}`;
+function startLiveTimers() {
+  if (timerInterval) clearInterval(timerInterval);
+  timerInterval = setInterval(() => {
+    state.rooms.forEach((room) => {
+      if (room.status !== 'running' && room.status !== 'paused') return;
+      const metrics = getRoomLiveMetrics(room);
+      const clockEl = document.getElementById(`room-clock-${room.id}`);
+      const subEl = document.getElementById(`room-sub-${room.id}`);
+      const timeCostEl = document.getElementById(`room-tcost-${room.id}`);
+      const totalEl = document.getElementById(`room-total-${room.id}`);
+      const cardEl = document.getElementById(`room-card-${room.id}`);
+
+      if (clockEl) {
+        if (room.timeType === 'fixed' && metrics.remainingMs !== null) {
+          clockEl.textContent = metrics.remainingMs > 0
+            ? formatTimerClock(metrics.remainingMs)
+            : `انتهى الوقت (+${formatTimerClock(Math.abs(metrics.remainingMs))})`;
+        } else {
+          clockEl.textContent = formatTimerClock(metrics.totalMs);
+        }
+      }
+      if (subEl) {
+        subEl.textContent = room.timeType === 'fixed'
+          ? `منقضي: ${formatDurationAr(metrics.totalMs)} / ${room.fixedMinutes} د`
+          : `وقت مفتوح (${room.mode})`;
+      }
+      if (timeCostEl) timeCostEl.textContent = fmtMoney(metrics.timeCost);
+      if (totalEl) totalEl.textContent = fmtMoney(metrics.grandTotal);
+      if (cardEl && metrics.isExpired && !cardEl.classList.contains('status-expired')) {
+        cardEl.classList.add('status-expired');
+      }
+    });
+  }, 1000);
 }
 
-function renderRooms() {
-  const grid = document.getElementById('roomsGrid');
-  const summaryBar = document.getElementById('roomsSummaryBar');
-  if (!grid) return;
+/* ==========================================================================
+   ROOMS RENDERING & SESSION CONTROLS
+   ========================================================================== */
+function renderRoomsTab() {
+  const grid = $('roomsGrid');
+  const bar = $('roomsSummaryBar');
+  if (!grid || !bar) return;
 
-  let runningCount = 0;
-  let idleCount = 0;
+  const runningCount = state.rooms.filter((r) => r.status === 'running' || r.status === 'paused').length;
+  const idleCount = state.rooms.length - runningCount;
 
-  grid.innerHTML = state.rooms
-    .map((room) => {
-      const isBusy = room.status === 'running' && room.session;
-      if (!isBusy) {
-        idleCount++;
-        return `
-          <div class="ps5-card status-idle" data-room-id="${room.id}" ondblclick="openStartRoomModal('${room.id}')">
-            <div class="ps5-led-strip"></div>
-            <div class="ps5-card-inner">
-              <div class="ps5-card-top">
-                <span class="ps5-room-name">${escapeHtml(room.name)}</span>
-                <span class="ps5-device-tag">${escapeHtml(room.type)}</span>
-              </div>
-              <div class="ps5-idle-body">
-                <div class="ps5-console-emblem">🎮</div>
-                <div class="ps5-idle-status">متاحة للتشغيل</div>
-                <div class="ps5-dblclick-hint">اضغط مرتين (Double Click) للتشغيل</div>
-              </div>
-              <div class="ps5-rates-footer">
-                <span>Single: <strong>${room.single_rate} ج</strong></span>
-                <span>Multi: <strong>${room.multi_rate} ج</strong></span>
-              </div>
-            </div>
-          </div>
-        `;
-      }
+  bar.innerHTML = `
+    <div class="summary-chip">🎮 إجمالي الغرف: <strong>${state.rooms.length}</strong></div>
+    <div class="summary-chip" style="color:var(--ps-cyan)">🔥 شغالة حالياً: <strong>${runningCount}</strong></div>
+    <div class="summary-chip" style="color:var(--success)">✅ متاحة: <strong>${idleCount}</strong></div>
+  `;
 
-      runningCount++;
-      const s = room.session;
-      const m = calculateSessionMetrics(room);
-      const statusClass = m.isExpired
+  grid.innerHTML = state.rooms.map((room) => {
+    const isIdle = room.status === 'idle';
+    const metrics = getRoomLiveMetrics(room);
+    const statusClass = isIdle
+      ? 'status-idle'
+      : metrics.isExpired
         ? 'status-expired'
-        : s.isPaused
-        ? 'status-paused'
-        : 'status-running';
+        : room.status === 'paused'
+          ? 'status-paused'
+          : 'status-running';
 
-      const timerMain =
-        s.timeType === 'fixed'
-          ? m.isExpired
-            ? `انتهى الوقت (+${formatDuration(m.remainingSec)})`
-            : formatDuration(m.remainingSec)
-          : formatDuration(m.elapsedSec);
-
-      const timerSub =
-        s.timeType === 'fixed'
-          ? `المدة المحددة: ${s.fixedMinutes} دقيقة | المنقضي: ${formatDuration(m.elapsedSec)}`
-          : s.isPaused
-          ? '⏸️ متوقف مؤقتاً (Hold)'
-          : `وقت مفتوح • بدأ ${formatTimeShort(s.startTime)}`;
-
+    if (isIdle) {
       return `
-        <div class="ps5-card ${statusClass}" id="room-card-${room.id}">
+        <div id="room-card-${room.id}" class="ps5-card ${statusClass}" ondblclick="openStartRoomModal('${room.id}')" title="اضغط مرتين لتشغيل الغرفة">
           <div class="ps5-led-strip"></div>
           <div class="ps5-card-inner">
             <div class="ps5-card-top">
-              <span class="ps5-room-name">${escapeHtml(room.name)}</span>
-              <span class="ps5-device-tag">${s.mode === 'Multi' ? '👥 Multi' : '👤 Single'}</span>
+              <span class="ps5-room-name">${room.name}</span>
+              <span class="ps5-device-tag">${room.device || 'PS5'}</span>
             </div>
-
-            <div class="ps5-session-meta">
-              <span class="meta-pill">🕹️ ${escapeHtml(s.game || 'بدون لعبة')}</span>
-              ${s.clientName ? `<span class="meta-pill">👤 ${escapeHtml(s.clientName)}</span>` : ''}
+            <div class="ps5-idle-body">
+              <div class="ps5-console-emblem">🎮</div>
+              <div class="ps5-idle-status">متاحة الآن</div>
+              <div class="ps5-dblclick-hint">اضغط مرتين (Double Click) للتشغيل</div>
+              <div style="margin-top:10px;">
+                <button type="button" class="btn btn-primary btn-xs" onclick="event.stopPropagation();openStartRoomModal('${room.id}')">▶️ تشغيل الغرفة</button>
+              </div>
             </div>
-
-            <div class="ps5-timer-display">
-              <span id="room-timer-${room.id}">${timerMain}</span>
-              <span class="ps5-timer-sub" id="room-timersub-${room.id}">${timerSub}</span>
-            </div>
-
-            <div class="ps5-cost-breakdown">
-              <span>لعب: <b id="room-timecost-${room.id}">${m.timeCost} ج</b></span>
-              <span>طلبات (${(s.orders || []).reduce((a, b) => a + b.qty, 0)}): <b>${m.ordersCost} ج</b></span>
-              <span>الإجمالي: <strong id="room-totalcost-${room.id}">${m.totalCost} ج</strong></span>
-            </div>
-
-            <div class="ps5-actions-grid">
-              <button class="btn btn-primary btn-sm" onclick="openRoomPosModal('${room.id}')">🛒 + طلبات</button>
-              <button class="btn btn-outline btn-sm" onclick="openSwitchModeModal('${room.id}')">🔄 تبديل (${s.mode === 'Single' ? 'Multi' : 'Single'})</button>
-              <button class="btn btn-warning btn-sm" onclick="toggleRoomPause('${room.id}')">${s.isPaused ? '▶️ استئناف' : '⏸️ هولد'}</button>
-              <button class="btn btn-success btn-sm btn-checkout-full" onclick="openRoomCheckoutModal('${room.id}')">🧾 تقفيل الحساب</button>
+            <div class="ps5-rates-footer">
+              <span>Single: <strong>${room.singleRate} ج</strong></span>
+              <span>Multi: <strong>${room.multiRate} ج</strong></span>
             </div>
           </div>
         </div>
       `;
-    })
-    .join('');
-
-  if (summaryBar) {
-    summaryBar.innerHTML = `
-      <div class="summary-chip">إجمالي الغرف: <strong>${state.rooms.length}</strong></div>
-      <div class="summary-chip" style="color:var(--ps-cyan)">شغالة الآن: <strong>${runningCount}</strong></div>
-      <div class="summary-chip" style="color:var(--success)">متاحة: <strong>${idleCount}</strong></div>
-    `;
-  }
-}
-
-function updateLiveRoomTimers() {
-  state.rooms.forEach((room) => {
-    if (room.status !== 'running' || !room.session) return;
-    const m = calculateSessionMetrics(room);
-    const card = document.getElementById(`room-card-${room.id}`);
-    const timerEl = document.getElementById(`room-timer-${room.id}`);
-    const subEl = document.getElementById(`room-timersub-${room.id}`);
-    const timeCostEl = document.getElementById(`room-timecost-${room.id}`);
-    const totalCostEl = document.getElementById(`room-totalcost-${room.id}`);
-
-    if (!timerEl) return;
-    const s = room.session;
-
-    if (m.isExpired && card && !card.classList.contains('status-expired')) {
-      card.classList.remove('status-running');
-      card.classList.add('status-expired');
     }
 
-    timerEl.textContent =
-      s.timeType === 'fixed'
-        ? m.isExpired
-          ? `انتهى الوقت (+${formatDuration(m.remainingSec)})`
-          : formatDuration(m.remainingSec)
-        : formatDuration(m.elapsedSec);
+    const clockText = room.timeType === 'fixed' && metrics.remainingMs !== null
+      ? (metrics.remainingMs > 0 ? formatTimerClock(metrics.remainingMs) : `انتهى (+${formatTimerClock(Math.abs(metrics.remainingMs))})`)
+      : formatTimerClock(metrics.totalMs);
 
-    if (subEl && s.timeType === 'fixed') {
-      subEl.textContent = `المدة المحددة: ${s.fixedMinutes} دقيقة | المنقضي: ${formatDuration(m.elapsedSec)}`;
-    }
-    if (timeCostEl) timeCostEl.textContent = `${m.timeCost} ج`;
-    if (totalCostEl) totalCostEl.textContent = `${m.totalCost} ج`;
-  });
-}
+    const hasSwitched = (metrics.singleMs > 0 && metrics.multiMs > 0);
+    const periodBadge = hasSwitched
+      ? `<span class="meta-pill" style="border-color:var(--warning);color:var(--warning);">S+M مدمج</span>`
+      : '';
 
-/* ================= 8. START ROOM & SINGLE<->MULTI SWITCH ================= */
-
-function openStartRoomModal(roomId, prefill = null) {
-  const room = state.rooms.find((r) => String(r.id) === String(roomId));
-  if (!room) return;
-
-  document.getElementById('startRoomId').value = room.id;
-  document.getElementById('startRoomTitle').textContent = `🎮 تشغيل ${room.name} (${room.type})`;
-  document.getElementById('startSingleRateHint').textContent = `${room.single_rate} ج/ساعة`;
-  document.getElementById('startMultiRateHint').textContent = `${room.multi_rate} ج/ساعة`;
-
-  selectedStartMode = prefill?.mode || 'Single';
-  selectedStartGame = prefill?.game || (state.games[0]?.name || 'FC 26');
-  selectedStartTimeType = 'open';
-  pendingReservationId = prefill?.reservationId || null;
-
-  document.getElementById('startClientName').value = prefill?.clientName || '';
-  document.getElementById('startClientPhone').value = prefill?.clientPhone || '';
-  document.getElementById('startFixedMinutes').value = 60;
-
-  updateStartRoomModalUI();
-  openModal('modalStartRoom');
-}
-
-function updateStartRoomModalUI() {
-  document.getElementById('startModeSingle').classList.toggle('active', selectedStartMode === 'Single');
-  document.getElementById('startModeMulti').classList.toggle('active', selectedStartMode === 'Multi');
-
-  document.getElementById('startTimeTypeOpen').classList.toggle('active', selectedStartTimeType === 'open');
-  document.getElementById('startTimeTypeFixed').classList.toggle('active', selectedStartTimeType === 'fixed');
-  document.getElementById('startFixedMinutesBox').classList.toggle('hidden', selectedStartTimeType !== 'fixed');
-
-  const gamesGrid = document.getElementById('startGamesGrid');
-  gamesGrid.innerHTML = state.games
-    .map(
-      (g) => `
-      <button type="button" class="game-pick-btn ${selectedStartGame === g.name ? 'active' : ''}"
-        onclick="selectStartGame('${escapeAttr(g.name)}')">
-        ${escapeHtml(g.name)}
-      </button>
-    `
-    )
-    .join('');
-}
-
-function selectStartGame(name) {
-  selectedStartGame = name;
-  updateStartRoomModalUI();
-}
-
-async function confirmStartRoom() {
-  if (!requireOpenShift()) return;
-
-  const roomId = document.getElementById('startRoomId').value;
-  const room = state.rooms.find((r) => String(r.id) === String(roomId));
-  if (!room) return;
-
-  const now = Date.now();
-  const fixedMinutes =
-    selectedStartTimeType === 'fixed'
-      ? Math.max(5, Number(document.getElementById('startFixedMinutes').value || 60))
-      : null;
-
-  room.status = 'running';
-  room.session = {
-    startTime: now,
-    segmentStart: now,
-    accumulatedCost: 0,
-    accumulatedElapsedMs: 0,
-    isPaused: false,
-    mode: selectedStartMode,
-    game: selectedStartGame,
-    timeType: selectedStartTimeType,
-    fixedMinutes,
-    clientName: document.getElementById('startClientName').value.trim(),
-    clientPhone: document.getElementById('startClientPhone').value.trim(),
-    orders: [],
-    staffName: activeUser.name
-  };
-
-  if (pendingReservationId) {
-    const resv = state.reservations.find((r) => r.id === pendingReservationId);
-    if (resv) {
-      resv.status = 'Completed';
-      await dbMutate('reservations', 'update', { status: 'Completed' }, 'id', resv.id);
-    }
-    pendingReservationId = null;
-  }
-
-  await dbMutate('rooms', 'update', { status: 'running', session: room.session }, 'id', room.id);
-  closeModal('modalStartRoom');
-  renderAll();
-  showToast(`تم تشغيل ${room.name} (${room.session.mode}) ✅`, 'success');
-}
-
-async function toggleRoomPause(roomId) {
-  const room = state.rooms.find((r) => String(r.id) === String(roomId));
-  if (!room || !room.session) return;
-
-  const s = room.session;
-  const now = Date.now();
-
-  if (!s.isPaused) {
-    const activeMs = Math.max(0, now - Number(s.segmentStart || s.startTime));
-    const rate = s.mode === 'Multi' ? Number(room.multi_rate) : Number(room.single_rate);
-    s.accumulatedCost = Number(s.accumulatedCost || 0) + (activeMs / 3600000) * rate;
-    s.accumulatedElapsedMs = Number(s.accumulatedElapsedMs || 0) + activeMs;
-    s.isPaused = true;
-    showToast(`تم عمل Hold لـ ${room.name}`, 'warning');
-  } else {
-    s.segmentStart = now;
-    s.isPaused = false;
-    showToast(`تم استئناف ${room.name} ▶️`, 'success');
-  }
-
-  await dbMutate('rooms', 'update', { session: s }, 'id', room.id);
-  renderRooms();
-}
-
-function openSwitchModeModal(roomId) {
-  const room = state.rooms.find((r) => String(r.id) === String(roomId));
-  if (!room || !room.session) return;
-
-  const s = room.session;
-  const currentMode = s.mode;
-  const targetMode = currentMode === 'Single' ? 'Multi' : 'Single';
-  const targetRate = targetMode === 'Multi' ? room.multi_rate : room.single_rate;
-
-  document.getElementById('switchRoomId').value = room.id;
-  document.getElementById('switchRoomTitle').textContent = `🔄 تبديل نظام اللعب - ${room.name}`;
-  document.getElementById('switchCurrentInfo').innerHTML =
-    `الوضع الحالي: <strong>${currentMode}</strong> على لعبة <strong>${escapeHtml(s.game)}</strong>`;
-  document.getElementById('switchTargetLabel').textContent =
-    `${targetMode === 'Multi' ? '👥 Multi (زوجي)' : '👤 Single (فردي)'} — بسعر ${targetRate} ج/ساعة`;
-
-  openModal('modalSwitchMode');
-}
-
-async function confirmSwitchMode() {
-  const roomId = document.getElementById('switchRoomId').value;
-  const room = state.rooms.find((r) => String(r.id) === String(roomId));
-  if (!room || !room.session) return;
-
-  const s = room.session;
-  const now = Date.now();
-
-  if (!s.isPaused) {
-    const activeMs = Math.max(0, now - Number(s.segmentStart || s.startTime));
-    const currentRate = s.mode === 'Multi' ? Number(room.multi_rate) : Number(room.single_rate);
-    s.accumulatedCost = Number(s.accumulatedCost || 0) + (activeMs / 3600000) * currentRate;
-    s.accumulatedElapsedMs = Number(s.accumulatedElapsedMs || 0) + activeMs;
-    s.segmentStart = now;
-  }
-
-  s.mode = s.mode === 'Single' ? 'Multi' : 'Single';
-
-  await dbMutate('rooms', 'update', { session: s }, 'id', room.id);
-  closeModal('modalSwitchMode');
-  renderRooms();
-  showToast(`تم التحويل إلى ${s.mode} على نفس اللعبة ✅`, 'success');
-}
-
-/* ================= 9. CAFE TABLES SECTION ================= */
-
-function renderTables() {
-  const grid = document.getElementById('tablesGrid');
-  const summaryBar = document.getElementById('tablesSummaryBar');
-  if (!grid) return;
-
-  let openCount = 0;
-  let idleCount = 0;
-
-  grid.innerHTML = state.tables
-    .map((tbl) => {
-      const isOpen = tbl.status === 'open' && tbl.session;
-      if (!isOpen) {
-        idleCount++;
-        return `
-          <div class="table-card idle" ondblclick="openStartTableModal('${tbl.id}')">
-            <div class="table-card-header">
-              <strong style="font-size:1.1rem">🪑 ${escapeHtml(tbl.name)}</strong>
-              <span class="badge badge-completed">متاحة</span>
-            </div>
-            <div style="text-align:center;padding:24px 8px;color:var(--text-muted)">
-              <div style="font-size:1.8rem;margin-bottom:4px">☕</div>
-              <div>اضغط مرتين (Double Click) لفتح الترابيزة</div>
-            </div>
-          </div>
-        `;
-      }
-
-      openCount++;
-      const s = tbl.session;
-      const orders = Array.isArray(s.orders) ? s.orders : [];
-      const totalCost = orders.reduce((sum, o) => sum + Number(o.price) * Number(o.qty), 0);
-
-      return `
-        <div class="table-card open">
-          <div class="table-card-header">
-            <strong style="font-size:1.1rem">🪑 ${escapeHtml(tbl.name)}</strong>
-            <span class="badge badge-debt">مفتوحة • ${formatTimeShort(s.startTime)}</span>
-          </div>
-          ${s.clientName ? `<div style="font-size:0.84rem;color:var(--ps-cyan)">👤 ${escapeHtml(s.clientName)}</div>` : ''}
-
-          <div class="table-orders-preview">
-            ${
-              orders.length === 0
-                ? `<span style="color:var(--text-muted)">لا توجد طلبات مسجلة بعد</span>`
-                : orders
-                    .map(
-                      (o) => `<div style="display:flex;justify-content:space-between;">
-                        <span>${escapeHtml(o.name)} × ${o.qty}</span>
-                        <strong>${o.price * o.qty} ج</strong>
-                      </div>`
-                    )
-                    .join('')
-            }
+    return `
+      <div id="room-card-${room.id}" class="ps5-card ${statusClass}">
+        <div class="ps5-led-strip"></div>
+        <div class="ps5-card-inner">
+          <div class="ps5-card-top">
+            <span class="ps5-room-name">${room.name}</span>
+            <span class="ps5-device-tag">${room.device || 'PS5'}</span>
           </div>
 
-          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
-            <span>إجمالي الترابيزة:</span>
-            <strong style="color:var(--success);font-size:1.2rem">${totalCost} ج.م</strong>
+          <div class="ps5-session-meta">
+            <span class="meta-pill">${room.mode === 'Multi' ? '👥 Multi' : '👤 Single'}</span>
+            <span class="meta-pill">🕹️ ${room.game || 'PS5'}</span>
+            ${periodBadge}
+            ${room.clientName ? `<span class="meta-pill">👤 ${room.clientName}</span>` : ''}
+          </div>
+
+          <div class="ps5-timer-display">
+            <span id="room-clock-${room.id}">${clockText}</span>
+            <span id="room-sub-${room.id}" class="ps5-timer-sub">${room.status === 'paused' ? '⏸️ متوقف مؤقتاً' : `بدأ ${formatTimeShort(room.startTime)}`}</span>
+          </div>
+
+          <div class="ps5-cost-breakdown">
+            <div>لعب: <strong id="room-tcost-${room.id}">${fmtMoney(metrics.timeCost)}</strong></div>
+            <div>طلبات (${(room.orders || []).reduce((s, o) => s + o.qty, 0)}): <strong>${fmtMoney(metrics.ordersCost)}</strong></div>
+            <div>الإجمالي: <strong id="room-total-${room.id}">${fmtMoney(metrics.grandTotal)}</strong></div>
           </div>
 
           <div class="ps5-actions-grid">
-            <button class="btn btn-primary btn-sm" onclick="openTablePosModal('${tbl.id}')">🛒 + طلبات</button>
-            <button class="btn btn-success btn-sm" onclick="openTableCheckoutModal('${tbl.id}')">🧾 تقفيل الحساب</button>
+            <button type="button" class="btn btn-primary btn-sm" onclick="openPosOrdersModal('room', '${room.id}')">☕ طلبات</button>
+            <button type="button" class="btn btn-outline btn-sm" onclick="openSwitchModeModal('${room.id}')">🔄 تبديل S/M</button>
+            <button type="button" class="btn btn-warning btn-sm" onclick="togglePauseRoom('${room.id}')">${room.status === 'paused' ? '▶️ استكمال' : '⏸️ إيقاف'}</button>
+            <button type="button" class="btn btn-outline btn-sm" onclick="cancelRoomSession('${room.id}')">✖ إلغاء</button>
+            <button type="button" class="btn btn-success btn-sm btn-checkout-full" onclick="openRoomCheckoutModal('${room.id}')">🧾 تقفيل الحساب</button>
           </div>
         </div>
-      `;
-    })
-    .join('');
-
-  if (summaryBar) {
-    summaryBar.innerHTML = `
-      <div class="summary-chip">إجمالي الترابيزات: <strong>${state.tables.length}</strong></div>
-      <div class="summary-chip" style="color:var(--warning)">مفتوحة الآن: <strong>${openCount}</strong></div>
-      <div class="summary-chip" style="color:var(--success)">متاحة: <strong>${idleCount}</strong></div>
+      </div>
     `;
+  }).join('');
+}
+
+function openStartRoomModal(preferredRoomId = '', prefill = null) {
+  if (!getActiveShift()) {
+    showToast('افتح وردية الأول قبل تشغيل الغرف!', 'warning');
+    switchTab('shift');
+    return;
   }
+
+  const idleRooms = state.rooms.filter((r) => r.status === 'idle');
+  if (!idleRooms.length && !preferredRoomId) {
+    showToast('كل الغرف مشغولة حالياً!', 'warning');
+    return;
+  }
+
+  state.pendingReservationId = prefill && prefill.reservationId ? prefill.reservationId : null;
+
+  // Populate Room Selector dropdown
+  const roomSel = $('startRoomSelect');
+  const candidateRooms = idleRooms.length ? idleRooms : state.rooms;
+  roomSel.innerHTML = candidateRooms.map((r) =>
+    `<option value="${r.id}">${r.name} (${r.device || 'PS5'}) — Single: ${r.singleRate}ج | Multi: ${r.multiRate}ج</option>`
+  ).join('');
+
+  const chosenRoomId = (preferredRoomId && candidateRooms.some((r) => r.id === preferredRoomId))
+    ? preferredRoomId
+    : candidateRooms[0].id;
+
+  roomSel.value = chosenRoomId;
+  syncStartRoomModalRates(chosenRoomId);
+
+  // Mode selection
+  const targetMode = (prefill && prefill.mode) || 'Single';
+  document.querySelectorAll('#modalStartRoom .mode-btn').forEach((b) => {
+    b.classList.toggle('active', b.dataset.mode === targetMode);
+  });
+
+  // Games grid
+  const games = state.settings.games || DEFAULT_GAMES;
+  const selectedGame = (prefill && prefill.game && games.includes(prefill.game)) ? prefill.game : games[0];
+  $('startGamesGrid').innerHTML = games.map((g) => `
+    <button type="button" class="game-pick-btn ${g === selectedGame ? 'active' : ''}" data-game="${g}">${g}</button>
+  `).join('');
+
+  $('startGamesGrid').querySelectorAll('.game-pick-btn').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      $('startGamesGrid').querySelectorAll('.game-pick-btn').forEach((b) => b.classList.remove('active'));
+      btn.classList.add('active');
+    });
+  });
+
+  // Time Type reset
+  document.querySelectorAll('#modalStartRoom .time-btn').forEach((b) => {
+    b.classList.toggle('active', b.dataset.type === 'open');
+  });
+  $('startFixedMinutesBox').classList.add('hidden');
+  $('startFixedMinutes').value = '60';
+
+  $('startClientName').value = (prefill && prefill.clientName) || '';
+  $('startClientPhone').value = (prefill && prefill.clientPhone) || '';
+
+  openModal('modalStartRoom');
+}
+
+function syncStartRoomModalRates(roomId) {
+  const room = state.rooms.find((r) => r.id === roomId);
+  if (!room) return;
+  $('startRoomId').value = room.id;
+  $('startRoomTitle').textContent = state.pendingReservationId
+    ? `📅 تشغيل حجز — اختيار الغرفة (${room.name})`
+    : `🎮 تشغيل ${room.name}`;
+  $('startSingleRateHint').textContent = `${room.singleRate} ج/ساعة`;
+  $('startMultiRateHint').textContent = `${room.multiRate} ج/ساعة`;
+}
+
+function confirmStartRoom() {
+  const roomId = $('startRoomSelect').value || $('startRoomId').value;
+  const room = state.rooms.find((r) => r.id === roomId);
+  if (!room) return;
+
+  if (room.status === 'running' || room.status === 'paused') {
+    showToast('الغرفة المختارة مشغولة بالفعل، اختر غرفة متاحة!', 'error');
+    return;
+  }
+
+  const activeModeBtn = document.querySelector('#modalStartRoom .mode-btn.active');
+  const mode = activeModeBtn ? activeModeBtn.dataset.mode : 'Single';
+  const activeGameBtn = document.querySelector('#startGamesGrid .game-pick-btn.active');
+  const game = activeGameBtn ? activeGameBtn.dataset.game : (state.settings.games[0] || 'FC 26');
+  const activeTimeBtn = document.querySelector('#modalStartRoom .time-btn.active');
+  const timeType = activeTimeBtn ? activeTimeBtn.dataset.type : 'open';
+  const fixedMinutes = Math.max(5, Number($('startFixedMinutes').value) || 60);
+
+  room.status = 'running';
+  room.mode = mode;
+  room.game = game;
+  room.timeType = timeType;
+  room.fixedMinutes = fixedMinutes;
+  room.startTime = new Date().toISOString();
+  room.accumulatedElapsedMs = 0;
+  room.accumulatedCost = 0;
+  room.singleElapsedMs = 0;
+  room.singleCost = 0;
+  room.multiElapsedMs = 0;
+  room.multiCost = 0;
+  room.clientName = $('startClientName').value.trim();
+  room.clientPhone = $('startClientPhone').value.trim();
+  room.orders = [];
+
+  queueCloudSync('arena_rooms', 'upsert', room);
+
+  if (state.pendingReservationId) {
+    const res = state.reservations.find((r) => r.id === state.pendingReservationId);
+    if (res) {
+      res.status = 'Completed';
+      res.assignedRoom = room.name;
+      queueCloudSync('arena_reservations', 'upsert', res);
+    }
+    state.pendingReservationId = null;
+  }
+
+  closeModal('modalStartRoom');
+  renderRoomsTab();
+  renderReservationsTab();
+  showToast(`تم تشغيل ${room.name} (${mode} - ${game}) ▶️`, 'success');
+}
+
+function openSwitchModeModal(roomId) {
+  const room = state.rooms.find((r) => r.id === roomId);
+  if (!room || room.status === 'idle') return;
+  const nextMode = room.mode === 'Single' ? 'Multi' : 'Single';
+  const currentRate = room.mode === 'Multi' ? room.multiRate : room.singleRate;
+  const nextRate = nextMode === 'Multi' ? room.multiRate : room.singleRate;
+
+  $('switchRoomId').value = room.id;
+  $('switchRoomTitle').textContent = `🔄 تبديل نظام اللعب — ${room.name}`;
+  $('switchCurrentInfo').innerHTML = `النظام الحالي: <strong>${room.mode}</strong> (${currentRate} ج/ساعة)`;
+  $('switchTargetLabel').textContent = `${nextMode} (${nextRate} ج/ساعة)`;
+  openModal('modalSwitchMode');
+}
+
+function confirmSwitchMode() {
+  const roomId = $('switchRoomId').value;
+  const room = state.rooms.find((r) => r.id === roomId);
+  if (!room || room.status === 'idle') return;
+
+  const now = new Date();
+  let segMs = 0;
+  if (room.status === 'running' && room.startTime) {
+    segMs = Math.max(0, now.getTime() - new Date(room.startTime).getTime());
+  }
+
+  const currentRate = room.mode === 'Multi' ? Number(room.multiRate) : Number(room.singleRate);
+  const segCost = (segMs / 3600000) * currentRate;
+
+  if (room.mode === 'Multi') {
+    room.multiElapsedMs = (Number(room.multiElapsedMs) || 0) + segMs;
+    room.multiCost = (Number(room.multiCost) || 0) + segCost;
+  } else {
+    room.singleElapsedMs = (Number(room.singleElapsedMs) || 0) + segMs;
+    room.singleCost = (Number(room.singleCost) || 0) + segCost;
+  }
+
+  room.accumulatedElapsedMs = room.singleElapsedMs + room.multiElapsedMs;
+  room.accumulatedCost = room.singleCost + room.multiCost;
+  room.mode = room.mode === 'Single' ? 'Multi' : 'Single';
+
+  if (room.status === 'running') {
+    room.startTime = now.toISOString();
+  }
+
+  queueCloudSync('arena_rooms', 'upsert', room);
+  closeModal('modalSwitchMode');
+  renderRoomsTab();
+  showToast(`تم التحويل إلى ${room.mode} مع حفظ تفاصيل الفترة السابقة 🔄`, 'success');
+}
+
+function togglePauseRoom(roomId) {
+  const room = state.rooms.find((r) => r.id === roomId);
+  if (!room || room.status === 'idle') return;
+
+  if (room.status === 'running') {
+    const segMs = room.startTime ? Math.max(0, Date.now() - new Date(room.startTime).getTime()) : 0;
+    const rate = room.mode === 'Multi' ? Number(room.multiRate) : Number(room.singleRate);
+    const segCost = (segMs / 3600000) * rate;
+
+    if (room.mode === 'Multi') {
+      room.multiElapsedMs = (Number(room.multiElapsedMs) || 0) + segMs;
+      room.multiCost = (Number(room.multiCost) || 0) + segCost;
+    } else {
+      room.singleElapsedMs = (Number(room.singleElapsedMs) || 0) + segMs;
+      room.singleCost = (Number(room.singleCost) || 0) + segCost;
+    }
+    room.accumulatedElapsedMs = room.singleElapsedMs + room.multiElapsedMs;
+    room.accumulatedCost = room.singleCost + room.multiCost;
+    room.status = 'paused';
+    room.startTime = null;
+    showToast(`تم إيقاف ${room.name} مؤقتاً ⏸️`, 'warning');
+  } else if (room.status === 'paused') {
+    room.status = 'running';
+    room.startTime = new Date().toISOString();
+    showToast(`تم استكمال ${room.name} ▶️`, 'success');
+  }
+
+  queueCloudSync('arena_rooms', 'upsert', room);
+  renderRoomsTab();
+}
+
+function cancelRoomSession(roomId) {
+  const room = state.rooms.find((r) => r.id === roomId);
+  if (!room) return;
+  if (!confirm(`هل أنت متأكد من إلغاء جلسة ${room.name} بدون حفظ فاتورة؟`)) return;
+
+  // Return stock of any added orders
+  (room.orders || []).forEach((o) => adjustMenuStock(o.id, o.qty));
+
+  resetRoomObject(room);
+  queueCloudSync('arena_rooms', 'upsert', room);
+  renderRoomsTab();
+  showToast(`تم إلغاء جلسة ${room.name}`, 'info');
+}
+
+function resetRoomObject(room) {
+  room.status = 'idle';
+  room.startTime = null;
+  room.accumulatedElapsedMs = 0;
+  room.accumulatedCost = 0;
+  room.singleElapsedMs = 0;
+  room.singleCost = 0;
+  room.multiElapsedMs = 0;
+  room.multiCost = 0;
+  room.clientName = '';
+  room.clientPhone = '';
+  room.orders = [];
+}
+
+/* ==========================================================================
+   CAFE TABLES
+   ========================================================================== */
+function renderTablesTab() {
+  const grid = $('tablesGrid');
+  const bar = $('tablesSummaryBar');
+  if (!grid || !bar) return;
+
+  const openCount = state.tables.filter((t) => t.status === 'open').length;
+  bar.innerHTML = `
+    <div class="summary-chip">🪑 إجمالي الترابيزات: <strong>${state.tables.length}</strong></div>
+    <div class="summary-chip" style="color:var(--warning)">☕ مفتوحة حالياً: <strong>${openCount}</strong></div>
+    <div class="summary-chip" style="color:var(--success)">✅ متاحة: <strong>${state.tables.length - openCount}</strong></div>
+  `;
+
+  grid.innerHTML = state.tables.map((tbl) => {
+    if (tbl.status !== 'open') {
+      return `
+        <div class="table-card idle" ondblclick="openStartTableModal('${tbl.id}')">
+          <div class="table-card-header">
+            <strong style="font-size:1.1rem;">🪑 ${tbl.name}</strong>
+            <span class="badge badge-completed">متاحة</span>
+          </div>
+          <p class="hint-text" style="margin:14px 0;">اضغط مرتين لفتح الترابيزة أو اضغط بالأسفل</p>
+          <button type="button" class="btn btn-primary btn-block btn-sm" onclick="openStartTableModal('${tbl.id}')">▶️ فتح الترابيزة</button>
+        </div>
+      `;
+    }
+
+    const total = (tbl.orders || []).reduce((s, o) => s + (o.price * o.qty), 0);
+    const ordersHtml = (tbl.orders || []).length
+      ? tbl.orders.map((o) => `<div style="display:flex;justify-content:space-between;"><span>${o.name} × ${o.qty}</span><strong>${fmtMoney(o.price * o.qty)}</strong></div>`).join('')
+      : '<span class="hint-text">لا توجد طلبات مسجلة بعد</span>';
+
+    return `
+      <div class="table-card open">
+        <div class="table-card-header">
+          <strong style="font-size:1.1rem;">🪑 ${tbl.name}</strong>
+          <span class="badge badge-debt">${tbl.clientName || 'عميل كافيه'}</span>
+        </div>
+        <div style="font-size:0.78rem;color:var(--text-muted);">فُتحت الساعة: ${formatTimeShort(tbl.openedAt)}</div>
+        <div class="table-orders-preview">${ordersHtml}</div>
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
+          <span>إجمالي الطلبات:</span>
+          <strong style="color:var(--success);font-size:1.15rem;">${fmtMoney(total)}</strong>
+        </div>
+        <div class="btn-row">
+          <button type="button" class="btn btn-primary btn-sm" style="flex:1;" onclick="openPosOrdersModal('table', '${tbl.id}')">☕ إضافة طلبات</button>
+          <button type="button" class="btn btn-success btn-sm" style="flex:1;" onclick="openTableCheckoutModal('${tbl.id}')">🧾 تقفيل</button>
+        </div>
+      </div>
+    `;
+  }).join('');
 }
 
 function openStartTableModal(tableId) {
-  if (!requireOpenShift()) return;
-  const tbl = state.tables.find((t) => String(t.id) === String(tableId));
+  if (!getActiveShift()) {
+    showToast('افتح وردية الأول قبل فتح الترابيزات!', 'warning');
+    switchTab('shift');
+    return;
+  }
+  const tbl = state.tables.find((t) => t.id === tableId);
   if (!tbl) return;
-  document.getElementById('startTableId').value = tbl.id;
-  document.getElementById('startTableTitle').textContent = `🪑 فتح ${tbl.name}`;
-  document.getElementById('startTableClientName').value = '';
+  $('startTableId').value = tbl.id;
+  $('startTableTitle').textContent = `🪑 فتح ${tbl.name}`;
+  $('startTableClientName').value = '';
   openModal('modalStartTable');
 }
 
-async function confirmStartTable() {
-  if (!requireOpenShift()) return;
-  const tableId = document.getElementById('startTableId').value;
-  const tbl = state.tables.find((t) => String(t.id) === String(tableId));
+function confirmStartTable() {
+  const tableId = $('startTableId').value;
+  const tbl = state.tables.find((t) => t.id === tableId);
   if (!tbl) return;
-
   tbl.status = 'open';
-  tbl.session = {
-    startTime: Date.now(),
-    clientName: document.getElementById('startTableClientName').value.trim(),
-    orders: [],
-    staffName: activeUser.name
-  };
-
-  await saveSystemStateKey('arena_tables', state.tables);
+  tbl.clientName = $('startTableClientName').value.trim();
+  tbl.openedAt = new Date().toISOString();
+  tbl.orders = [];
+  queueCloudSync('arena_tables', 'upsert', tbl);
   closeModal('modalStartTable');
-  renderAll();
+  renderTablesTab();
   showToast(`تم فتح ${tbl.name} ✅`, 'success');
 }
 
-/* ================= 10. WIDE VISUAL POS GRID (ROOMS, TABLES, DIRECT) ================= */
+/* ==========================================================================
+   VISUAL POS CATALOG & ORDERS (DIRECT CAFE + ROOMS + TABLES)
+   ========================================================================== */
+function getMenuSvgIcon(type, name = '') {
+  let resolved = type;
+  if (!resolved || resolved === 'auto') {
+    const n = name.toLowerCase();
+    if (n.includes('مياه')) resolved = 'water';
+    else if (n.includes('بيبسي') || n.includes('سفن') || n.includes('كانز') || n.includes('ريد')) resolved = 'can';
+    else if (n.includes('آيس') || n.includes('شيك')) resolved = 'iced';
+    else if (n.includes('شاي') || n.includes('ينسون')) resolved = 'tea';
+    else if (n.includes('سموزي') || n.includes('عصير')) resolved = 'juice';
+    else if (n.includes('شيبسي') || n.includes('سناكس')) resolved = 'snack';
+    else if (n.includes('وافل') || n.includes('مولتن')) resolved = 'sweet';
+    else resolved = 'coffee';
+  }
 
-function getCategoriesList() {
-  const cats = new Set(['الكل']);
-  state.menuItems.forEach((m) => {
-    if (m.category) cats.add(m.category);
-  });
-  return Array.from(cats);
+  const icons = {
+    coffee: `<svg class="pos-tile-svg" viewBox="0 0 64 64"><rect x="14" y="24" width="28" height="24" rx="6" fill="#d97706"/><path d="M42 28h6a6 6 0 0 1 0 12h-6" fill="none" stroke="#f59e0b" stroke-width="4"/><path d="M22 14c0-4 4-4 4-8M30 14c0-4 4-4 4-8" stroke="#94a3b8" stroke-width="3" stroke-linecap="round"/></svg>`,
+    tea: `<svg class="pos-tile-svg" viewBox="0 0 64 64"><path d="M16 22h32l-4 28H20z" fill="#10b981"/><path d="M48 26h5a5 5 0 0 1 0 10h-5" fill="none" stroke="#34d399" stroke-width="4"/></svg>`,
+    iced: `<svg class="pos-tile-svg" viewBox="0 0 64 64"><path d="M18 18h28l-4 36H22z" fill="#38bdf8"/><path d="M15 18h34" stroke="#f8fafc" stroke-width="4" stroke-linecap="round"/><path d="M34 8l-4 14" stroke="#f43f5e" stroke-width="3.5" stroke-linecap="round"/></svg>`,
+    can: `<svg class="pos-tile-svg" viewBox="0 0 64 64"><rect x="20" y="12" width="24" height="40" rx="5" fill="#0070d1"/><rect x="20" y="26" width="24" height="10" fill="#00d4ff"/></svg>`,
+    water: `<svg class="pos-tile-svg" viewBox="0 0 64 64"><rect x="22" y="18" width="20" height="36" rx="6" fill="#0ea5e9"/><rect x="26" y="10" width="12" height="8" rx="2" fill="#e2e8f0"/></svg>`,
+    juice: `<svg class="pos-tile-svg" viewBox="0 0 64 64"><path d="M18 20h28l-5 34H23z" fill="#f59e0b"/><circle cx="44" cy="18" r="7" fill="#10b981"/></svg>`,
+    snack: `<svg class="pos-tile-svg" viewBox="0 0 64 64"><rect x="16" y="14" width="32" height="38" rx="6" fill="#ef4444"/><circle cx="32" cy="33" r="9" fill="#facc15"/></svg>`,
+    sweet: `<svg class="pos-tile-svg" viewBox="0 0 64 64"><rect x="14" y="22" width="36" height="24" rx="6" fill="#b45309"/><path d="M18 26h28M18 34h28M24 22v24M32 22v24M40 22v24" stroke="#78350f" stroke-width="2.5"/></svg>`
+  };
+  return icons[resolved] || icons.coffee;
 }
 
-function openRoomPosModal(roomId) {
-  const room = state.rooms.find((r) => String(r.id) === String(roomId));
-  if (!room || !room.session) return;
-
-  document.getElementById('posTargetType').value = 'room';
-  document.getElementById('posTargetRoomId').value = room.id;
-  document.getElementById('posModalTitle').textContent = `🛒 إضافة طلبات - ${room.name}`;
-  document.getElementById('posSearchInput').value = '';
-  roomPosCart = {};
-  roomPosActiveCat = 'الكل';
-
-  renderPosInterface('room');
-  openModal('modalPosOrders');
+function adjustMenuStock(menuId, delta) {
+  const item = state.menu.find((m) => m.id === menuId);
+  if (!item) return;
+  item.stock = Math.max(0, (Number(item.stock) || 0) + delta);
+  queueCloudSync('arena_menu', 'upsert', item);
 }
 
-function openTablePosModal(tableId) {
-  const tbl = state.tables.find((t) => String(t.id) === String(tableId));
-  if (!tbl || !tbl.session) return;
+function renderDirectCafePOS() {
+  const catTabs = $('cafeCategoryTabs');
+  const grid = $('cafeProductsGrid');
+  if (!catTabs || !grid) return;
 
-  document.getElementById('posTargetType').value = 'table';
-  document.getElementById('posTargetRoomId').value = tbl.id;
-  document.getElementById('posModalTitle').textContent = `🛒 إضافة طلبات - ${tbl.name}`;
-  document.getElementById('posSearchInput').value = '';
-  roomPosCart = {};
-  roomPosActiveCat = 'الكل';
+  const categories = ['الكل', ...new Set(state.menu.map((m) => m.category))];
+  catTabs.innerHTML = categories.map((cat) => `
+    <button type="button" class="pos-cat-tab ${state.cafeCategory === cat ? 'active' : ''}" onclick="setCafeCategory('${cat}')">${cat}</button>
+  `).join('');
 
-  renderPosInterface('room');
-  openModal('modalPosOrders');
-}
-
-function renderDirectCafePos() {
-  renderPosInterface('direct');
-}
-
-function renderPosInterface(mode) {
-  const isModal = mode === 'room';
-  const catContainer = document.getElementById(isModal ? 'posCategoryTabs' : 'cafeCategoryTabs');
-  const gridContainer = document.getElementById(isModal ? 'posProductsGrid' : 'cafeProductsGrid');
-  const cartContainer = document.getElementById(isModal ? 'posCartList' : 'directCartList');
-  const totalEl = document.getElementById(isModal ? 'posCartTotal' : 'directCartTotal');
-  const searchVal = (document.getElementById(isModal ? 'posSearchInput' : 'cafeSearchInput')?.value || '').trim().toLowerCase();
-
-  const activeCat = isModal ? roomPosActiveCat : directActiveCat;
-  const cart = isModal ? roomPosCart : directCart;
-
-  const cats = getCategoriesList();
-  catContainer.innerHTML = cats
-    .map(
-      (cat) => `
-      <button type="button" class="pos-cat-tab ${activeCat === cat ? 'active' : ''}"
-        onclick="selectPosCategory('${mode}', '${escapeAttr(cat)}')">
-        ${escapeHtml(cat)}
-      </button>
-    `
-    )
-    .join('');
-
-  const filtered = state.menuItems.filter((item) => {
-    const matchCat = activeCat === 'الكل' || item.category === activeCat;
-    const matchSearch = !searchVal || item.name.toLowerCase().includes(searchVal);
+  const search = ($('cafeSearchInput').value || '').trim().toLowerCase();
+  const filtered = state.menu.filter((m) => {
+    const matchCat = state.cafeCategory === 'الكل' || m.category === state.cafeCategory;
+    const matchSearch = !search || m.name.toLowerCase().includes(search);
     return matchCat && matchSearch;
   });
 
-  if (filtered.length === 0) {
-    gridContainer.innerHTML = `<p class="hint-text">لا توجد أصناف مطابقة. أضف أصنافاً من تبويب الإعدادات.</p>`;
-  } else {
-    gridContainer.innerHTML = filtered
-      .map((item) => {
-        const qty = Number(cart[item.id] || 0);
-        const hasStock = item.stock !== null && item.stock !== undefined;
-        const stockVal = hasStock ? Number(item.stock) : null;
-        const minStock = Number(item.min_stock ?? 5);
-        const isOut = hasStock && stockVal <= 0;
-        const stockTagHtml = hasStock
-          ? `<span class="pos-tile-stock-tag ${stockVal <= 0 ? 'out' : stockVal <= minStock ? 'low' : 'ok'}">
-              ${stockVal <= 0 ? 'نفذ المخزون (0)' : `المخزون: ${stockVal} ${escapeHtml(item.unit || '')}`}
-            </span>`
-          : '';
+  grid.innerHTML = filtered.map((m) => {
+    const inCart = state.directCart.find((c) => c.id === m.id);
+    const qty = inCart ? inCart.qty : 0;
+    const stock = Number(m.stock) || 0;
+    const minStock = Number(m.minStock) || 5;
+    const stockTagClass = stock <= 0 ? 'out' : stock <= minStock ? 'low' : 'ok';
 
-        return `
-          <div class="pos-tile ${qty > 0 ? 'selected' : ''} ${isOut ? 'out-of-stock' : ''}" onclick="adjustPosCart('${mode}', '${item.id}', 1)">
-            <span class="pos-tile-price">${item.price} ج.م</span>
-            ${getSmartItemSvg(item)}
-            <div class="pos-tile-name">${escapeHtml(item.name)}</div>
-            ${stockTagHtml}
-            <div class="pos-tile-qty-bar" onclick="event.stopPropagation()">
-              <button type="button" class="tile-qty-btn minus" onclick="adjustPosCart('${mode}', '${item.id}', -1)">-</button>
-              <strong>${qty}</strong>
-              <button type="button" class="tile-qty-btn plus" onclick="adjustPosCart('${mode}', '${item.id}', 1)">+</button>
-            </div>
-          </div>
-        `;
-      })
-      .join('');
+    return `
+      <div class="pos-tile ${qty > 0 ? 'selected' : ''} ${stock <= 0 ? 'out-of-stock' : ''}" onclick="changeDirectCartQty('${m.id}', 1)">
+        <div class="pos-tile-price">${fmtMoney(m.price)}</div>
+        ${getMenuSvgIcon(m.icon, m.name)}
+        <div class="pos-tile-name">${m.name}</div>
+        <span class="pos-tile-stock-tag ${stockTagClass}">المخزون: ${stock}</span>
+        <div class="pos-tile-qty-bar" onclick="event.stopPropagation()">
+          <button type="button" class="tile-qty-btn minus" onclick="changeDirectCartQty('${m.id}', -1)">-</button>
+          <strong>${qty}</strong>
+          <button type="button" class="tile-qty-btn plus" onclick="changeDirectCartQty('${m.id}', 1)">+</button>
+        </div>
+      </div>
+    `;
+  }).join('');
+
+  renderDirectCartSidebar();
+}
+
+function setCafeCategory(cat) {
+  state.cafeCategory = cat;
+  renderDirectCafePOS();
+}
+
+function changeDirectCartQty(menuId, delta) {
+  const item = state.menu.find((m) => m.id === menuId);
+  if (!item) return;
+  const idx = state.directCart.findIndex((c) => c.id === menuId);
+  if (idx === -1 && delta > 0) {
+    state.directCart.push({ id: item.id, name: item.name, price: Number(item.price), qty: 1 });
+  } else if (idx !== -1) {
+    state.directCart[idx].qty += delta;
+    if (state.directCart[idx].qty <= 0) state.directCart.splice(idx, 1);
+  }
+  renderDirectCafePOS();
+}
+
+function renderDirectCartSidebar() {
+  const list = $('directCartList');
+  const totalEl = $('directCartTotal');
+  if (!list || !totalEl) return;
+
+  if (!state.directCart.length) {
+    list.innerHTML = '<p class="hint-text" style="text-align:center;margin-top:20px;">اختر الأصناف من القائمة لإضافتها</p>';
+    totalEl.textContent = '0 ج.م';
+    return;
   }
 
   let total = 0;
-  const entries = Object.entries(cart).filter(([, q]) => q > 0);
-  if (entries.length === 0) {
-    cartContainer.innerHTML = `<p class="hint-text" style="text-align:center;margin-top:20px;">اضغط على أي صنف لإضافته</p>`;
-  } else {
-    cartContainer.innerHTML = entries
-      .map(([id, qty]) => {
-        const item = state.menuItems.find((m) => String(m.id) === String(id));
-        if (!item) return '';
-        const lineTotal = item.price * qty;
-        total += lineTotal;
-        return `
-          <div class="pos-cart-row">
-            <div>
-              <strong>${escapeHtml(item.name)}</strong>
-              <div style="font-size:0.76rem;color:var(--text-muted)">${item.price} × ${qty} = ${lineTotal} ج</div>
-            </div>
-            <div class="pos-cart-controls">
-              <button type="button" class="tile-qty-btn minus" onclick="adjustPosCart('${mode}', '${item.id}', -1)">-</button>
-              <strong>${qty}</strong>
-              <button type="button" class="tile-qty-btn plus" onclick="adjustPosCart('${mode}', '${item.id}', 1)">+</button>
-            </div>
-          </div>
-        `;
-      })
-      .join('');
-  }
+  list.innerHTML = state.directCart.map((c) => {
+    const lineTotal = c.price * c.qty;
+    total += lineTotal;
+    return `
+      <div class="pos-cart-row">
+        <div>
+          <strong>${c.name}</strong>
+          <div style="font-size:0.78rem;color:var(--text-muted);">${fmtMoney(c.price)} × ${c.qty}</div>
+        </div>
+        <div class="pos-cart-controls">
+          <strong>${fmtMoney(lineTotal)}</strong>
+          <button type="button" class="tile-qty-btn minus" onclick="changeDirectCartQty('${c.id}', -1)">-</button>
+          <button type="button" class="tile-qty-btn plus" onclick="changeDirectCartQty('${c.id}', 1)">+</button>
+        </div>
+      </div>
+    `;
+  }).join('');
 
-  totalEl.textContent = `${total} ج.م`;
+  totalEl.textContent = fmtMoney(total);
 }
 
-function selectPosCategory(mode, cat) {
-  if (mode === 'room') roomPosActiveCat = cat;
-  else directActiveCat = cat;
-  renderPosInterface(mode);
+/* Modal POS for Rooms & Tables */
+function openPosOrdersModal(targetType, targetId) {
+  $('posTargetType').value = targetType;
+  $('posTargetRoomId').value = targetId;
+  state.posCart = [];
+  state.posCategory = 'الكل';
+  $('posSearchInput').value = '';
+
+  const unit = targetType === 'room'
+    ? state.rooms.find((r) => r.id === targetId)
+    : state.tables.find((t) => t.id === targetId);
+  $('posModalTitle').textContent = `🛒 إضافة طلبات — ${unit ? unit.name : ''}`;
+
+  renderModalPosGrid();
+  openModal('modalPosOrders');
 }
 
-function adjustPosCart(mode, itemId, delta) {
-  const cart = mode === 'room' ? roomPosCart : directCart;
-  const next = Math.max(0, Number(cart[itemId] || 0) + delta);
-  if (next === 0) delete cart[itemId];
-  else cart[itemId] = next;
-  renderPosInterface(mode);
-}
+function renderModalPosGrid() {
+  const catTabs = $('posCategoryTabs');
+  const grid = $('posProductsGrid');
+  const categories = ['الكل', ...new Set(state.menu.map((m) => m.category))];
 
-async function deductStockForSoldItems(soldItems) {
-  if (!Array.isArray(soldItems) || soldItems.length === 0) return;
-  let changed = false;
+  catTabs.innerHTML = categories.map((cat) => `
+    <button type="button" class="pos-cat-tab ${state.posCategory === cat ? 'active' : ''}" onclick="setModalPosCategory('${cat}')">${cat}</button>
+  `).join('');
 
-  for (const sold of soldItems) {
-    const item = state.menuItems.find(
-      (m) => String(m.id) === String(sold.id) || m.name === sold.name
-    );
-    if (!item) continue;
-    if (item.stock !== null && item.stock !== undefined) {
-      item.stock = Math.max(0, Number(item.stock) - Number(sold.qty || 0));
-      state.menuMeta[String(item.id)] = {
-        ...(state.menuMeta[String(item.id)] || {}),
-        cost: Number(item.cost || 0),
-        stock: item.stock,
-        min_stock: Number(item.min_stock ?? 5),
-        unit: item.unit || 'قطعة'
-      };
-      changed = true;
-      await dbMutate('menu_items', 'update', { stock: item.stock }, 'id', item.id);
-    }
-  }
-
-  if (changed) {
-    await saveSystemStateKey('arena_menu_meta', state.menuMeta);
-  }
-}
-
-async function confirmPosModalOrders() {
-  const targetType = document.getElementById('posTargetType').value;
-  const targetId = document.getElementById('posTargetRoomId').value;
-
-  const entries = Object.entries(roomPosCart).filter(([, q]) => q > 0);
-  if (entries.length === 0) {
-    showToast('اختر صنفاً واحداً على الأقل', 'warning');
-    return;
-  }
-
-  if (targetType === 'table') {
-    const tbl = state.tables.find((t) => String(t.id) === String(targetId));
-    if (!tbl || !tbl.session) return;
-    if (!Array.isArray(tbl.session.orders)) tbl.session.orders = [];
-
-    entries.forEach(([id, qty]) => {
-      const item = state.menuItems.find((m) => String(m.id) === String(id));
-      if (!item) return;
-      const existing = tbl.session.orders.find((o) => String(o.id) === String(id));
-      if (existing) existing.qty += qty;
-      else tbl.session.orders.push({ id: item.id, name: item.name, price: item.price, qty });
-    });
-
-    await saveSystemStateKey('arena_tables', state.tables);
-    closeModal('modalPosOrders');
-    renderAll();
-    showToast(`تمت إضافة الطلبات لحساب ${tbl.name} ✅`, 'success');
-    return;
-  }
-
-  const room = state.rooms.find((r) => String(r.id) === String(targetId));
-  if (!room || !room.session) return;
-  if (!Array.isArray(room.session.orders)) room.session.orders = [];
-
-  entries.forEach(([id, qty]) => {
-    const item = state.menuItems.find((m) => String(m.id) === String(id));
-    if (!item) return;
-    const existing = room.session.orders.find((o) => String(o.id) === String(id));
-    if (existing) existing.qty += qty;
-    else room.session.orders.push({ id: item.id, name: item.name, price: item.price, qty });
+  const search = ($('posSearchInput').value || '').trim().toLowerCase();
+  const filtered = state.menu.filter((m) => {
+    const matchCat = state.posCategory === 'الكل' || m.category === state.posCategory;
+    const matchSearch = !search || m.name.toLowerCase().includes(search);
+    return matchCat && matchSearch;
   });
 
-  await dbMutate('rooms', 'update', { session: room.session }, 'id', room.id);
+  grid.innerHTML = filtered.map((m) => {
+    const inCart = state.posCart.find((c) => c.id === m.id);
+    const qty = inCart ? inCart.qty : 0;
+    return `
+      <div class="pos-tile ${qty > 0 ? 'selected' : ''}" onclick="changeModalPosQty('${m.id}', 1)">
+        <div class="pos-tile-price">${fmtMoney(m.price)}</div>
+        ${getMenuSvgIcon(m.icon, m.name)}
+        <div class="pos-tile-name">${m.name}</div>
+        <div class="pos-tile-qty-bar" onclick="event.stopPropagation()">
+          <button type="button" class="tile-qty-btn minus" onclick="changeModalPosQty('${m.id}', -1)">-</button>
+          <strong>${qty}</strong>
+          <button type="button" class="tile-qty-btn plus" onclick="changeModalPosQty('${m.id}', 1)">+</button>
+        </div>
+      </div>
+    `;
+  }).join('');
+
+  const list = $('posCartList');
+  let total = 0;
+  list.innerHTML = state.posCart.map((c) => {
+    const line = c.price * c.qty;
+    total += line;
+    return `
+      <div class="pos-cart-row">
+        <span>${c.name} × ${c.qty}</span>
+        <strong>${fmtMoney(line)}</strong>
+      </div>
+    `;
+  }).join('') || '<p class="hint-text" style="text-align:center;">اختر الأصناف للإضافة</p>';
+
+  $('posCartTotal').textContent = fmtMoney(total);
+}
+
+function setModalPosCategory(cat) {
+  state.posCategory = cat;
+  renderModalPosGrid();
+}
+
+function changeModalPosQty(menuId, delta) {
+  const item = state.menu.find((m) => m.id === menuId);
+  if (!item) return;
+  const idx = state.posCart.findIndex((c) => c.id === menuId);
+  if (idx === -1 && delta > 0) {
+    state.posCart.push({ id: item.id, name: item.name, price: Number(item.price), qty: 1 });
+  } else if (idx !== -1) {
+    state.posCart[idx].qty += delta;
+    if (state.posCart[idx].qty <= 0) state.posCart.splice(idx, 1);
+  }
+  renderModalPosGrid();
+}
+
+function confirmModalPosOrders() {
+  if (!state.posCart.length) {
+    showToast('اختر صنف واحد على الأقل!', 'warning');
+    return;
+  }
+  const targetType = $('posTargetType').value;
+  const targetId = $('posTargetRoomId').value;
+
+  const targetObj = targetType === 'room'
+    ? state.rooms.find((r) => r.id === targetId)
+    : state.tables.find((t) => t.id === targetId);
+  if (!targetObj) return;
+
+  if (!Array.isArray(targetObj.orders)) targetObj.orders = [];
+  state.posCart.forEach((c) => {
+    const existing = targetObj.orders.find((o) => o.id === c.id);
+    if (existing) existing.qty += c.qty;
+    else targetObj.orders.push({ ...c });
+    adjustMenuStock(c.id, -c.qty);
+  });
+
+  queueCloudSync(targetType === 'room' ? 'arena_rooms' : 'arena_tables', 'upsert', targetObj);
   closeModal('modalPosOrders');
-  renderAll();
-  showToast(`تمت إضافة الطلبات لحساب ${room.name} ✅`, 'success');
+  renderRoomsTab();
+  renderTablesTab();
+  showToast('تمت إضافة الطلبات لحساب الوحدة ✅', 'success');
 }
 
-/* ================= 11. CHECKOUT & NOTAH SYSTEM ================= */
-
-let activeCheckoutData = null;
-
+/* ==========================================================================
+   CHECKOUT, MULTI-CLIENT NOTAH SPLIT & THERMAL RECEIPT PRINTING
+   ========================================================================== */
 function openRoomCheckoutModal(roomId) {
-  if (!requireOpenShift()) return;
-  const room = state.rooms.find((r) => String(r.id) === String(roomId));
-  if (!room || !room.session) return;
+  if (!getActiveShift()) {
+    showToast('افتح وردية الأول قبل تقفيل الحسابات!', 'warning');
+    switchTab('shift');
+    return;
+  }
+  const room = state.rooms.find((r) => r.id === roomId);
+  if (!room || room.status === 'idle') return;
 
-  const s = room.session;
-  const m = calculateSessionMetrics(room);
-
-  const lines = [
-    { label: `لعب ${room.name} (${s.game} - ${s.mode}) [${formatDuration(m.elapsedSec)}]`, amount: m.timeCost }
-  ];
-  const soldItems = [];
-  (s.orders || []).forEach((o) => {
-    lines.push({ label: `${o.name} × ${o.qty}`, amount: o.price * o.qty });
-    soldItems.push({ id: o.id, name: o.name, price: Number(o.price), qty: Number(o.qty) });
-  });
-
-  activeCheckoutData = {
-    contextType: 'room',
-    contextId: room.id,
-    title: `فاتورة ${room.name}`,
-    description: `${room.name} (${s.game} - ${s.mode})${(s.orders || []).length ? ' + ' + s.orders.map((o) => `${o.name} × ${o.qty}`).join('، ') : ''}`,
-    lines,
-    soldItems,
-    timeCost: m.timeCost,
+  const m = getRoomLiveMetrics(room);
+  state.checkout = {
+    type: 'room',
+    targetId: room.id,
+    title: `تقفيل ${room.name} (${room.game})`,
+    items: (room.orders || []).map((o) => ({ ...o })),
+    roomTimeCost: m.timeCost,
     ordersCost: m.ordersCost,
-    subtotal: m.totalCost,
-    defaultClientName: s.clientName || ''
+    subtotal: m.grandTotal,
+    discount: 0,
+    grandTotal: m.grandTotal,
+    singleMs: m.singleMs,
+    singleCost: m.singleCost,
+    multiMs: m.multiMs,
+    multiCost: m.multiCost,
+    gameName: room.game,
+    totalDurationMs: m.totalMs,
+    notahSplits: []
   };
 
-  prepareCheckoutModal();
+  let breakdownHtml = `
+    <div style="display:flex;justify-content:space-between;font-weight:800;margin-bottom:4px;">
+      <span>🎮 وقت اللعب (${room.game} — ${formatDurationAr(m.totalMs)}):</span>
+      <strong>${fmtMoney(m.timeCost)}</strong>
+    </div>
+  `;
+
+  if (m.singleMs > 0) {
+    breakdownHtml += `
+      <div class="checkout-sub-line" style="display:flex;justify-content:space-between;">
+        <span>• فترة Single (${formatDurationAr(m.singleMs)}):</span>
+        <span>${fmtMoney(m.singleCost)}</span>
+      </div>
+    `;
+  }
+  if (m.multiMs > 0) {
+    breakdownHtml += `
+      <div class="checkout-sub-line" style="display:flex;justify-content:space-between;">
+        <span>• فترة Multi (${formatDurationAr(m.multiMs)}):</span>
+        <span>${fmtMoney(m.multiCost)}</span>
+      </div>
+    `;
+  }
+
+  if (state.checkout.items.length) {
+    breakdownHtml += `<hr class="divider" style="margin:6px 0;" />`;
+    state.checkout.items.forEach((it) => {
+      breakdownHtml += `
+        <div style="display:flex;justify-content:space-between;margin-top:3px;">
+          <span>☕ ${it.name} × ${it.qty}</span>
+          <strong>${fmtMoney(it.price * it.qty)}</strong>
+        </div>
+      `;
+    });
+  }
+
+  $('checkoutBreakdownBox').innerHTML = breakdownHtml;
+  setupCheckoutModalUI();
 }
 
 function openTableCheckoutModal(tableId) {
-  if (!requireOpenShift()) return;
-  const tbl = state.tables.find((t) => String(t.id) === String(tableId));
-  if (!tbl || !tbl.session) return;
-
-  const s = tbl.session;
-  const orders = Array.isArray(s.orders) ? s.orders : [];
-  if (orders.length === 0) {
-    showToast('الترابيزة ليس عليها طلبات — يمكنك إغلاقها أو إضافة طلبات أولاً', 'warning');
+  if (!getActiveShift()) {
+    showToast('افتح وردية الأول قبل تقفيل الحسابات!', 'warning');
+    switchTab('shift');
+    return;
   }
+  const tbl = state.tables.find((t) => t.id === tableId);
+  if (!tbl || tbl.status !== 'open') return;
 
-  let subtotal = 0;
-  const soldItems = [];
-  const lines = orders.map((o) => {
-    const amt = Number(o.price) * Number(o.qty);
-    subtotal += amt;
-    soldItems.push({ id: o.id, name: o.name, price: Number(o.price), qty: Number(o.qty) });
-    return { label: `${o.name} × ${o.qty}`, amount: amt };
-  });
-
-  activeCheckoutData = {
-    contextType: 'table',
-    contextId: tbl.id,
-    title: `فاتورة ${tbl.name}`,
-    description: `${tbl.name} (${lines.map((l) => l.label).join('، ') || 'بدون طلبات'})`,
-    lines,
-    soldItems,
-    timeCost: 0,
-    ordersCost: subtotal,
-    subtotal,
-    defaultClientName: s.clientName || ''
+  const ordersCost = (tbl.orders || []).reduce((s, o) => s + (o.price * o.qty), 0);
+  state.checkout = {
+    type: 'table',
+    targetId: tbl.id,
+    title: `تقفيل ${tbl.name}`,
+    items: (tbl.orders || []).map((o) => ({ ...o })),
+    roomTimeCost: 0,
+    ordersCost,
+    subtotal: ordersCost,
+    discount: 0,
+    grandTotal: ordersCost,
+    singleMs: 0,
+    singleCost: 0,
+    multiMs: 0,
+    multiCost: 0,
+    gameName: '',
+    totalDurationMs: 0,
+    notahSplits: []
   };
 
-  prepareCheckoutModal();
+  $('checkoutBreakdownBox').innerHTML = state.checkout.items.map((it) => `
+    <div style="display:flex;justify-content:space-between;margin-bottom:3px;">
+      <span>☕ ${it.name} × ${it.qty}</span>
+      <strong>${fmtMoney(it.price * it.qty)}</strong>
+    </div>
+  `).join('') || '<span class="hint-text">لا توجد طلبات</span>';
+
+  setupCheckoutModalUI();
 }
 
-function openDirectCafeCheckout() {
-  if (!requireOpenShift()) return;
-  const entries = Object.entries(directCart).filter(([, q]) => q > 0);
-  if (entries.length === 0) {
-    showToast('السلة فارغة!', 'warning');
+function openDirectCheckoutModal() {
+  if (!getActiveShift()) {
+    showToast('افتح وردية الأول قبل تقفيل الطلبات!', 'warning');
+    switchTab('shift');
+    return;
+  }
+  if (!state.directCart.length) {
+    showToast('السلة فارغة! اختر أصناف أولاً.', 'warning');
     return;
   }
 
-  const lines = [];
-  const soldItems = [];
-  let subtotal = 0;
-  entries.forEach(([id, qty]) => {
-    const item = state.menuItems.find((m) => String(m.id) === String(id));
-    if (!item) return;
-    const amt = item.price * qty;
-    subtotal += amt;
-    lines.push({ label: `${item.name} × ${qty}`, amount: amt });
-    soldItems.push({ id: item.id, name: item.name, price: Number(item.price), qty: Number(qty) });
-  });
-
-  activeCheckoutData = {
-    contextType: 'cafe',
-    contextId: 'direct',
+  const ordersCost = state.directCart.reduce((s, o) => s + (o.price * o.qty), 0);
+  state.checkout = {
+    type: 'direct',
+    targetId: 'direct-cafe',
     title: 'فاتورة كافيه / تيك أواي',
-    description: `تيك أواي (${lines.map((l) => l.label).join('، ')})`,
-    lines,
-    soldItems,
-    timeCost: 0,
-    ordersCost: subtotal,
-    subtotal,
-    defaultClientName: ''
+    items: state.directCart.map((o) => ({ ...o })),
+    roomTimeCost: 0,
+    ordersCost,
+    subtotal: ordersCost,
+    discount: 0,
+    grandTotal: ordersCost,
+    singleMs: 0,
+    singleCost: 0,
+    multiMs: 0,
+    multiCost: 0,
+    gameName: '',
+    totalDurationMs: 0,
+    notahSplits: []
   };
 
-  prepareCheckoutModal();
+  $('checkoutBreakdownBox').innerHTML = state.checkout.items.map((it) => `
+    <div style="display:flex;justify-content:space-between;margin-bottom:3px;">
+      <span>☕ ${it.name} × ${it.qty}</span>
+      <strong>${fmtMoney(it.price * it.qty)}</strong>
+    </div>
+  `).join('');
+
+  setupCheckoutModalUI();
 }
 
-function prepareCheckoutModal() {
-  const d = activeCheckoutData;
-  document.getElementById('checkoutTitle').textContent = `🧾 تقفيل - ${d.title}`;
-  document.getElementById('checkoutBreakdownBox').innerHTML = d.lines
-    .map((l) => `<div class="receipt-row"><span>${escapeHtml(l.label)}</span><strong>${l.amount} ج.م</strong></div>`)
-    .join('');
+function setupCheckoutModalUI() {
+  $('checkoutTitle').textContent = `🧾 ${state.checkout.title}`;
+  $('checkoutSubtotal').textContent = fmtMoney(state.checkout.subtotal);
+  $('checkoutDiscount').value = '0';
+  $('checkoutGrandTotal').textContent = fmtMoney(state.checkout.grandTotal);
+  $('payCash').value = String(state.checkout.grandTotal);
+  $('payVfCash').value = '0';
+  $('payNotah').value = '0';
+  $('quickClientForm').classList.add('hidden');
+  state.checkout.notahSplits = [];
 
-  document.getElementById('checkoutSubtotal').textContent = `${d.subtotal} ج.م`;
-  document.getElementById('checkoutDiscount').value = 0;
-  document.getElementById('payCash').value = d.subtotal;
-  document.getElementById('payVfCash').value = 0;
-  document.getElementById('payNotah').value = 0;
-
-  populateNotahClientSelect(d.defaultClientName);
-  document.getElementById('quickClientForm').classList.add('hidden');
-  recalculateCheckoutSplit('init');
+  recalculateCheckoutSplit();
   openModal('modalCheckout');
 }
 
-function populateNotahClientSelect(matchName = '') {
-  const sel = document.getElementById('checkoutNotahClientSelect');
-  sel.innerHTML =
-    `<option value="">-- اختر العميل --</option>` +
-    state.clients
-      .map(
-        (c) =>
-          `<option value="${c.id}" ${matchName && c.name.includes(matchName) ? 'selected' : ''}>
-            ${escapeHtml(c.name)} (${c.phone || 'بدون رقم'}) - عليه: ${c.notah_balance || 0} ج
-          </option>`
-      )
-      .join('');
+function ensureDefaultNotahSplitRow(totalNotahAmt) {
+  if (totalNotahAmt <= 0) {
+    state.checkout.notahSplits = [];
+    renderNotahSplitsList();
+    return;
+  }
+  if (state.checkout.notahSplits.length === 0) {
+    state.checkout.notahSplits.push({
+      id: uid('ns'),
+      clientId: state.clients[0] ? state.clients[0].id : '',
+      amount: totalNotahAmt
+    });
+  } else if (state.checkout.notahSplits.length === 1) {
+    state.checkout.notahSplits[0].amount = totalNotahAmt;
+  }
+  renderNotahSplitsList();
 }
 
-function recalculateCheckoutSplit(changedField) {
-  if (!activeCheckoutData) return;
-  const subtotal = activeCheckoutData.subtotal;
-  const discount = Math.max(0, Number(document.getElementById('checkoutDiscount').value || 0));
-  const grandTotal = Math.max(0, subtotal - discount);
-  document.getElementById('checkoutGrandTotal').textContent = `${grandTotal} ج.م`;
+function addNotahSplitRow() {
+  const totalNotah = Number($('payNotah').value) || 0;
+  const allocated = state.checkout.notahSplits.reduce((s, r) => s + (Number(r.amount) || 0), 0);
+  const rem = Math.max(0, totalNotah - allocated);
 
-  const cashEl = document.getElementById('payCash');
-  const vfEl = document.getElementById('payVfCash');
-  const notahEl = document.getElementById('payNotah');
+  state.checkout.notahSplits.push({
+    id: uid('ns'),
+    clientId: '',
+    amount: rem
+  });
+  renderNotahSplitsList();
+  validateNotahSplitsStatus();
+}
+
+function removeNotahSplitRow(splitId) {
+  state.checkout.notahSplits = state.checkout.notahSplits.filter((r) => r.id !== splitId);
+  renderNotahSplitsList();
+  validateNotahSplitsStatus();
+}
+
+function updateNotahSplitRow(splitId, field, value) {
+  const row = state.checkout.notahSplits.find((r) => r.id === splitId);
+  if (!row) return;
+  row[field] = field === 'amount' ? (Number(value) || 0) : value;
+  validateNotahSplitsStatus();
+}
+
+function renderNotahSplitsList() {
+  const container = $('notahSplitsList');
+  if (!container) return;
+
+  if (!state.clients.length) {
+    container.innerHTML = '<p class="hint-text" style="color:var(--danger);margin:4px 0;">لا يوجد عملاء مسجلون بعد — اضغط "+ إنشاء عميل جديد" بالأعلى لإضافة عميل.</p>';
+    validateNotahSplitsStatus();
+    return;
+  }
+
+  container.innerHTML = state.checkout.notahSplits.map((row) => {
+    const optionsHtml = [
+      '<option value="">-- اختر العميل --</option>',
+      ...state.clients.map((c) => `<option value="${c.id}" ${c.id === row.clientId ? 'selected' : ''}>${c.name} (${c.phone || '-'})</option>`)
+    ].join('');
+
+    return `
+      <div class="notah-split-row">
+        <select onchange="updateNotahSplitRow('${row.id}', 'clientId', this.value)">${optionsHtml}</select>
+        <input type="number" min="0" step="0.5" value="${row.amount}" placeholder="المبلغ" oninput="updateNotahSplitRow('${row.id}', 'amount', this.value)" />
+        <button type="button" class="btn btn-danger btn-xs" onclick="removeNotahSplitRow('${row.id}')" title="حذف">✕</button>
+      </div>
+    `;
+  }).join('');
+
+  validateNotahSplitsStatus();
+}
+
+function validateNotahSplitsStatus() {
+  const statusEl = $('notahSplitStatus');
+  if (!statusEl) return true;
+
+  const totalNotah = Number($('payNotah').value) || 0;
+  if (totalNotah <= 0) {
+    statusEl.className = 'notah-split-status';
+    statusEl.textContent = '';
+    return true;
+  }
+
+  if (!state.checkout.notahSplits.length) {
+    statusEl.className = 'notah-split-status invalid';
+    statusEl.textContent = 'أضف عميل واحد على الأقل لتسجيل النوتة ❌';
+    return false;
+  }
+
+  const hasMissingClient = state.checkout.notahSplits.some((r) => !r.clientId || (Number(r.amount) || 0) <= 0);
+  const sumSplits = state.checkout.notahSplits.reduce((s, r) => s + (Number(r.amount) || 0), 0);
+  const diff = Math.round((totalNotah - sumSplits) * 100) / 100;
+
+  if (hasMissingClient) {
+    statusEl.className = 'notah-split-status invalid';
+    statusEl.textContent = 'اختر اسم العميل وأدخل مبلغ أكبر من صفر لكل صف ❌';
+    return false;
+  }
+
+  if (Math.abs(diff) > 0.01) {
+    statusEl.className = 'notah-split-status invalid';
+    statusEl.textContent = diff > 0
+      ? `متبقي من النوتة لم يُوزّع: ${fmtMoney(diff)} ❌`
+      : `إجمالي توزيع العملاء أكبر من النوتة بـ ${fmtMoney(Math.abs(diff))} ❌`;
+    return false;
+  }
+
+  statusEl.className = 'notah-split-status valid';
+  statusEl.textContent = `توزيع النوتة (${fmtMoney(totalNotah)}) على ${state.checkout.notahSplits.length} عميل مطابق ✅`;
+  return true;
+}
+
+function recalculateCheckoutSplit(changedField = null) {
+  const discount = Math.max(0, Math.min(state.checkout.subtotal, Number($('checkoutDiscount').value) || 0));
+  state.checkout.discount = discount;
+  const grandTotal = Math.max(0, state.checkout.subtotal - discount);
+  state.checkout.grandTotal = grandTotal;
+  $('checkoutGrandTotal').textContent = fmtMoney(grandTotal);
 
   if (changedField === 'discount') {
-    cashEl.value = Math.max(0, grandTotal - Number(vfEl.value || 0) - Number(notahEl.value || 0));
-  } else if (changedField === 'notah' || changedField === 'vfcash') {
-    const vf = Math.max(0, Number(vfEl.value || 0));
-    const notah = Math.max(0, Number(notahEl.value || 0));
-    const rem = grandTotal - vf - notah;
-    if (rem >= 0) cashEl.value = rem;
+    $('payCash').value = String(grandTotal);
+    $('payVfCash').value = '0';
+    $('payNotah').value = '0';
   }
 
-  const cash = Math.max(0, Number(cashEl.value || 0));
-  const vf = Math.max(0, Number(vfEl.value || 0));
-  const notah = Math.max(0, Number(notahEl.value || 0));
-  const sum = cash + vf + notah;
-  const diff = grandTotal - sum;
+  const cash = Math.max(0, Number($('payCash').value) || 0);
+  const vfCash = Math.max(0, Number($('payVfCash').value) || 0);
+  const notah = Math.max(0, Number($('payNotah').value) || 0);
 
-  document.getElementById('checkoutNotahClientBox').classList.toggle('hidden', notah <= 0);
+  const notahBox = $('checkoutNotahClientBox');
+  if (notah > 0) {
+    notahBox.classList.remove('hidden');
+    ensureDefaultNotahSplitRow(notah);
+  } else {
+    notahBox.classList.add('hidden');
+    state.checkout.notahSplits = [];
+  }
 
-  const statusEl = document.getElementById('checkoutBalanceStatus');
-  if (Math.abs(diff) < 0.01) {
-    statusEl.className = 'balance-status valid';
-    statusEl.textContent = `المبلغ مطابق للإجمالي (${grandTotal} ج.م) ✅`;
-    return true;
+  const paidSum = cash + vfCash + notah;
+  const diff = Math.round((grandTotal - paidSum) * 100) / 100;
+  const badge = $('checkoutBalanceStatus');
+
+  if (Math.abs(diff) <= 0.01) {
+    badge.className = 'balance-status valid';
+    badge.textContent = 'المبلغ مطابق للإجمالي ✅';
   } else if (diff > 0) {
-    statusEl.className = 'balance-status invalid';
-    statusEl.textContent = `متبقي ${diff} ج.م لم يتم توزيعها ⚠️`;
-    return false;
+    badge.className = 'balance-status invalid';
+    badge.textContent = `متبقي من الحساب: ${fmtMoney(diff)} ❌`;
   } else {
-    statusEl.className = 'balance-status invalid';
-    statusEl.textContent = `المبلغ المدخل يزيد عن الفاتورة بمقدار ${Math.abs(diff)} ج.م ⚠️`;
-    return false;
+    badge.className = 'balance-status invalid';
+    badge.textContent = `المبلغ المدخل أكبر من المطلوب بـ ${fmtMoney(Math.abs(diff))} ❌`;
   }
 }
 
-async function handleQuickCreateClient() {
-  const name = document.getElementById('quickClientName').value.trim();
-  const phone = document.getElementById('quickClientPhone').value.trim();
-  if (!name) return showToast('اكتب اسم العميل أولاً', 'warning');
+function finalizeCheckoutAndPrint() {
+  const grandTotal = state.checkout.grandTotal;
+  const cash = Math.max(0, Number($('payCash').value) || 0);
+  const vfCash = Math.max(0, Number($('payVfCash').value) || 0);
+  const notah = Math.max(0, Number($('payNotah').value) || 0);
 
-  const newClient = {
-    id: 'cli-' + Date.now(),
-    name,
-    phone,
-    notah_balance: 0,
-    notah_history: []
-  };
-
-  state.clients.unshift(newClient);
-  await dbMutate('clients', 'insert', newClient);
-
-  populateNotahClientSelect();
-  document.getElementById('checkoutNotahClientSelect').value = newClient.id;
-  document.getElementById('quickClientForm').classList.add('hidden');
-  document.getElementById('quickClientName').value = '';
-  document.getElementById('quickClientPhone').value = '';
-  renderClientsTab();
-  showToast(`تم إنشاء بروفايل العميل "${name}" ✅`, 'success');
-}
-
-async function finalizeCheckoutAndPrint() {
-  if (!activeCheckoutData) return;
-  if (!recalculateCheckoutSplit('verify')) {
-    showToast('تأكد من تطابق المبالغ المدفوعة مع إجمالي الفاتورة', 'error');
+  if (Math.abs((cash + vfCash + notah) - grandTotal) > 0.01) {
+    showToast('إجمالي طرق الدفع لازم يساوي المطلوب سداده بالظبط!', 'error');
     return;
   }
 
-  const discount = Math.max(0, Number(document.getElementById('checkoutDiscount').value || 0));
-  const grandTotal = Math.max(0, activeCheckoutData.subtotal - discount);
-  const cashPaid = Math.max(0, Number(document.getElementById('payCash').value || 0));
-  const vfPaid = Math.max(0, Number(document.getElementById('payVfCash').value || 0));
-  const notahPaid = Math.max(0, Number(document.getElementById('payNotah').value || 0));
-
-  let targetClient = null;
-  if (notahPaid > 0) {
-    const clientId = document.getElementById('checkoutNotahClientSelect').value;
-    targetClient = state.clients.find((c) => String(c.id) === String(clientId));
-    if (!targetClient) {
-      showToast('يجب اختيار بروفايل العميل لتسجيل المبلغ على النوتة!', 'error');
-      return;
-    }
+  if (notah > 0 && !validateNotahSplitsStatus()) {
+    showToast('راجع توزيع مبلغ النوتة على العملاء الأول!', 'error');
+    return;
   }
 
-  const openShift = getOpenShift();
-  const businessDate = getShiftBusinessDate(openShift);
+  const activeShift = getActiveShift();
+  const businessDate = getCurrentBusinessDate();
   const nowIso = new Date().toISOString();
 
-  const payParts = [];
-  if (cashPaid > 0) payParts.push(`كاش: ${cashPaid} ج`);
-  if (vfPaid > 0) payParts.push(`فودافون كاش: ${vfPaid} ج`);
-  if (notahPaid > 0) payParts.push(`على النوتة (${targetClient.name}): ${notahPaid} ج`);
-
-  const tx = {
-    id: 'tx-' + Date.now(),
-    shift_id: openShift ? openShift.id : 'unassigned',
-    business_date: businessDate,
-    type: activeCheckoutData.contextType,
-    description: activeCheckoutData.description,
-    items: activeCheckoutData.soldItems || [],
-    time_cost: activeCheckoutData.timeCost,
-    orders_cost: activeCheckoutData.ordersCost,
-    discount,
-    amount: grandTotal,
-    cash_amount: cashPaid,
-    vfcash_amount: vfPaid,
-    notah_amount: notahPaid,
-    payment_summary: payParts.join(' + ') || '0 ج',
-    client_id: targetClient ? targetClient.id : null,
-    client_name: targetClient ? targetClient.name : null,
-    staff_name: activeUser.name,
-    created_at: nowIso
-  };
-
-  if (grandTotal > 0) {
-    state.transactions.unshift(tx);
-    await dbMutate('transactions', 'insert', tx);
-  }
-
-  if (activeCheckoutData.soldItems && activeCheckoutData.soldItems.length > 0) {
-    await deductStockForSoldItems(activeCheckoutData.soldItems);
-  }
-
-  if (targetClient && notahPaid > 0) {
-    targetClient.notah_balance = Number(targetClient.notah_balance || 0) + notahPaid;
-    if (!Array.isArray(targetClient.notah_history)) targetClient.notah_history = [];
-    targetClient.notah_history.unshift({
-      id: 'nh-' + Date.now(),
-      date: nowIso,
-      business_date: businessDate,
-      entryType: 'debt',
-      description: activeCheckoutData.description,
-      lines: activeCheckoutData.lines,
-      totalBill: grandTotal,
-      paidAtCheckout: cashPaid + vfPaid,
-      notahAdded: notahPaid,
-      staffName: activeUser.name
-    });
-
-    await dbMutate(
-      'clients',
-      'update',
-      {
-        notah_balance: targetClient.notah_balance,
-        notah_history: targetClient.notah_history
-      },
-      'id',
-      targetClient.id
-    );
-  }
-
-  if (activeCheckoutData.contextType === 'room') {
-    const room = state.rooms.find((r) => String(r.id) === String(activeCheckoutData.contextId));
-    if (room) {
-      room.status = 'idle';
-      room.session = null;
-      await dbMutate('rooms', 'update', { status: 'idle', session: null }, 'id', room.id);
-    }
-  } else if (activeCheckoutData.contextType === 'table') {
-    const tbl = state.tables.find((t) => String(t.id) === String(activeCheckoutData.contextId));
-    if (tbl) {
-      tbl.status = 'idle';
-      tbl.session = null;
-      await saveSystemStateKey('arena_tables', state.tables);
-    }
-  } else {
-    directCart = {};
-  }
-
-  const linesToPrint = [...activeCheckoutData.lines];
-  closeModal('modalCheckout');
-  renderAll();
-  showToast(`تم تقفيل الفاتورة (${grandTotal} ج.م) ✅`, 'success');
-  printReceipt(tx, linesToPrint);
-}
-
-/* ================= 12. CLIENTS & NOTAH COLLECTION ================= */
-
-function renderClientsTab() {
-  const tbody = document.getElementById('clientsTableBody');
-  const totalEl = document.getElementById('totalMarketNotah');
-  if (!tbody) return;
-
-  const q = (document.getElementById('clientSearchInput')?.value || '').trim().toLowerCase();
-  const totalMarket = state.clients.reduce((s, c) => s + Number(c.notah_balance || 0), 0);
-  if (totalEl) totalEl.textContent = `${totalMarket} ج.م`;
-
-  const filtered = state.clients.filter(
-    (c) =>
-      !q ||
-      (c.name || '').toLowerCase().includes(q) ||
-      (c.phone || '').toLowerCase().includes(q)
-  );
-
-  if (filtered.length === 0) {
-    tbody.innerHTML = `<tr><td colspan="4" style="text-align:center;color:var(--text-muted)">لا يوجد عملاء مسجلين</td></tr>`;
-    return;
-  }
-
-  tbody.innerHTML = filtered
-    .map((c) => {
-      const debt = Number(c.notah_balance || 0);
-      return `
-        <tr>
-          <td><strong>${escapeHtml(c.name)}</strong></td>
-          <td dir="ltr">${escapeHtml(c.phone || '-')}</td>
-          <td>
-            <span class="badge ${debt > 0 ? 'badge-debt' : 'badge-completed'}">
-              ${debt} ج.م
-            </span>
-          </td>
-          <td>
-            <button class="btn btn-primary btn-xs" onclick="openClientDetailsModal('${c.id}')">📂 فتح البروفايل</button>
-          </td>
-        </tr>
-      `;
-    })
-    .join('');
-}
-
-async function handleAddClient() {
-  const name = document.getElementById('newClientName').value.trim();
-  const phone = document.getElementById('newClientPhone').value.trim();
-  if (!name) return showToast('أدخل اسم العميل', 'warning');
-
-  const client = {
-    id: 'cli-' + Date.now(),
-    name,
-    phone,
-    notah_balance: 0,
-    notah_history: []
-  };
-
-  state.clients.unshift(client);
-  await dbMutate('clients', 'insert', client);
-
-  document.getElementById('newClientName').value = '';
-  document.getElementById('newClientPhone').value = '';
-  renderClientsTab();
-  showToast('تم حفظ العميل بنجاح ✅', 'success');
-}
-
-function openClientDetailsModal(clientId) {
-  const client = state.clients.find((c) => String(c.id) === String(clientId));
-  if (!client) return;
-
-  document.getElementById('detailClientId').value = client.id;
-  document.getElementById('detailClientName').textContent = client.name;
-  document.getElementById('detailClientPhone').textContent = client.phone || 'بدون رقم موبايل';
-  document.getElementById('detailClientDebt').textContent = `${Number(client.notah_balance || 0)} ج.م`;
-  document.getElementById('collectNotahAmount').value = '';
-  document.getElementById('collectNotahNote').value = '';
-
-  const histEl = document.getElementById('clientNotahHistoryList');
-  const history = Array.isArray(client.notah_history) ? client.notah_history : [];
-
-  if (history.length === 0) {
-    histEl.innerHTML = `<p class="hint-text">لا توجد حركات مسجلة على النوتة لهذا العميل.</p>`;
-  } else {
-    histEl.innerHTML = history
-      .map((h) => {
-        if (h.entryType === 'payment') {
-          return `
-            <div class="ledger-item payment">
-              <div style="display:flex;justify-content:space-between;">
-                <strong>✅ سداد / تحصيل من النوتة: ${h.amountPaid} ج.م</strong>
-                <span>${formatDateTime(h.date)}</span>
-              </div>
-              <div style="color:var(--text-muted);font-size:0.8rem;margin-top:3px;">
-                الطريقة: ${h.method === 'vfcash' ? 'فودافون كاش' : 'كاش (بالدرج)'} | الكاشير: ${escapeHtml(h.staffName || '-')}
-                ${h.note ? ` | ملاحظة: ${escapeHtml(h.note)}` : ''}
-              </div>
-            </div>
-          `;
-        }
-        return `
-          <div class="ledger-item">
-            <div style="display:flex;justify-content:space-between;">
-              <strong>📒 تسجيل على النوتة: +${h.notahAdded} ج.م</strong>
-              <span>${formatDateTime(h.date)}</span>
-            </div>
-            <div style="margin-top:4px;">التفاصيل: <strong>${escapeHtml(h.description || '')}</strong></div>
-            <div style="color:var(--text-muted);font-size:0.8rem;margin-top:2px;">
-              إجمالي الفاتورة: ${h.totalBill} ج | دفع وقتها: ${h.paidAtCheckout} ج | الكاشير: ${escapeHtml(h.staffName || '-')}
-            </div>
-          </div>
-        `;
+  // Build resolved Notah splits with client names
+  const resolvedNotahSplits = notah > 0
+    ? state.checkout.notahSplits.map((row) => {
+        const client = state.clients.find((c) => c.id === row.clientId);
+        return {
+          clientId: row.clientId,
+          clientName: client ? client.name : 'عميل',
+          amount: Number(row.amount) || 0
+        };
       })
-      .join('');
-  }
+    : [];
 
-  openModal('modalClientDetails');
-}
-
-async function handleCollectNotahPayment() {
-  if (!requireOpenShift()) return;
-  const clientId = document.getElementById('detailClientId').value;
-  const client = state.clients.find((c) => String(c.id) === String(clientId));
-  if (!client) return;
-
-  const currentDebt = Number(client.notah_balance || 0);
-  const payAmount = Number(document.getElementById('collectNotahAmount').value || 0);
-  const method = document.getElementById('collectNotahMethod').value;
-  const note = document.getElementById('collectNotahNote').value.trim();
-
-  if (payAmount <= 0) return showToast('أدخل مبلغ التحصيل الصحيح', 'warning');
-  if (payAmount > currentDebt) {
-    return showToast(`المبلغ المدخل أكبر من المستحق على العميل (${currentDebt} ج.م)`, 'error');
-  }
-
-  const nowIso = new Date().toISOString();
-  const openShift = getOpenShift();
-  const businessDate = getShiftBusinessDate(openShift);
-
-  client.notah_balance = currentDebt - payAmount;
-  if (!Array.isArray(client.notah_history)) client.notah_history = [];
-  client.notah_history.unshift({
-    id: 'nh-' + Date.now(),
-    date: nowIso,
+  const txData = {
+    id: uid('tx'),
+    shift_id: activeShift ? activeShift.id : null,
     business_date: businessDate,
-    entryType: 'payment',
-    amountPaid: payAmount,
-    method,
-    note,
-    staffName: activeUser.name
+    created_at: nowIso,
+    type: state.checkout.type,
+    unit_id: state.checkout.targetId,
+    title: state.checkout.title,
+    items: state.checkout.items,
+    room_time_cost: state.checkout.roomTimeCost,
+    orders_cost: state.checkout.ordersCost,
+    subtotal: state.checkout.subtotal,
+    discount: state.checkout.discount,
+    total: grandTotal,
+    cash_paid: cash,
+    vfcash_paid: vfCash,
+    notah_paid: notah,
+    notah_splits: resolvedNotahSplits,
+    single_ms: state.checkout.singleMs || 0,
+    single_cost: state.checkout.singleCost || 0,
+    multi_ms: state.checkout.multiMs || 0,
+    multi_cost: state.checkout.multiCost || 0,
+    total_duration_ms: state.checkout.totalDurationMs || 0,
+    game_name: state.checkout.gameName || '',
+    staff_name: state.currentUser ? state.currentUser.name : 'كاشير'
+  };
+
+  state.transactions.unshift(txData);
+  queueCloudSync('arena_transactions', 'upsert', txData);
+
+  // Record Notah debt per client
+  resolvedNotahSplits.forEach((sp) => {
+    const client = state.clients.find((c) => c.id === sp.clientId);
+    if (client) {
+      client.notah_balance = (Number(client.notah_balance) || 0) + sp.amount;
+      queueCloudSync('arena_clients', 'upsert', client);
+    }
+    const ledgerEntry = {
+      id: uid('nl'),
+      client_id: sp.clientId,
+      tx_id: txData.id,
+      business_date: businessDate,
+      created_at: nowIso,
+      entry_type: 'debt',
+      amount: sp.amount,
+      method: 'notah',
+      note: `${txData.title}${resolvedNotahSplits.length > 1 ? ' (تقسيم نوتة)' : ''}`,
+      staff_name: txData.staff_name
+    };
+    state.notahLedger.unshift(ledgerEntry);
+    queueCloudSync('arena_notah_ledger', 'upsert', ledgerEntry);
   });
 
-  await dbMutate(
-    'clients',
-    'update',
-    {
-      notah_balance: client.notah_balance,
-      notah_history: client.notah_history
-    },
-    'id',
-    client.id
-  );
-
-  const tx = {
-    id: 'tx-' + Date.now(),
-    shift_id: openShift.id,
-    business_date: businessDate,
-    type: 'notah_collection',
-    description: `تحصيل نوتة (حساب آجل من يوم سابق) — العميل: ${client.name}${note ? ` (${note})` : ''}`,
-    amount: payAmount,
-    cash_amount: method === 'cash' ? payAmount : 0,
-    vfcash_amount: method === 'vfcash' ? payAmount : 0,
-    notah_amount: 0,
-    payment_summary: method === 'cash' ? `تحصيل نوتة كاش: ${payAmount} ج` : `تحصيل نوتة فودافون كاش: ${payAmount} ج`,
-    client_id: client.id,
-    client_name: client.name,
-    staff_name: activeUser.name,
-    created_at: nowIso
-  };
-
-  state.transactions.unshift(tx);
-  await dbMutate('transactions', 'insert', tx);
-
-  renderAll();
-  openClientDetailsModal(client.id);
-  showToast(`تم تحصيل ${payAmount} ج.م من ${client.name} وإضافتها ليوم (${businessDate}) ✅`, 'success');
-}
-
-/* ================= 13. RESERVATIONS ================= */
-
-function renderReservationsTab() {
-  const gameSel = document.getElementById('resGameSelect');
-  if (gameSel) {
-    gameSel.innerHTML = state.games
-      .map((g) => `<option value="${escapeAttr(g.name)}">${escapeHtml(g.name)}</option>`)
-      .join('');
+  // Reset unit or deduct direct cart stock
+  if (state.checkout.type === 'room') {
+    const room = state.rooms.find((r) => r.id === state.checkout.targetId);
+    if (room) {
+      resetRoomObject(room);
+      queueCloudSync('arena_rooms', 'upsert', room);
+    }
+  } else if (state.checkout.type === 'table') {
+    const tbl = state.tables.find((t) => t.id === state.checkout.targetId);
+    if (tbl) {
+      tbl.status = 'idle';
+      tbl.clientName = '';
+      tbl.openedAt = null;
+      tbl.orders = [];
+      queueCloudSync('arena_tables', 'upsert', tbl);
+    }
+  } else if (state.checkout.type === 'direct') {
+    state.directCart.forEach((c) => adjustMenuStock(c.id, -c.qty));
+    state.directCart = [];
   }
 
+  closeModal('modalCheckout');
+  renderAll();
+  printThermalReceipt(txData);
+  showToast('تم تقفيل الفاتورة وطباعة الريسيت ✅', 'success');
+}
+
+function buildReceiptHtml(tx) {
+  const s = state.settings;
+  const logoHtml = s.receiptLogo ? `<img src="${s.receiptLogo}" class="receipt-logo-img" alt="Logo" />` : '';
+  const subtotal = Number(tx.subtotal) || (Number(tx.total) + (Number(tx.discount) || 0));
+  const discount = Number(tx.discount) || 0;
+
+  let linesHtml = '';
+  if (tx.room_time_cost > 0 || tx.type === 'room') {
+    linesHtml += `
+      <div class="receipt-row">
+        <span><strong>${tx.title}</strong> (${formatDurationAr(tx.total_duration_ms)})</span>
+        <span><strong>${fmtMoney(tx.room_time_cost)}</strong></span>
+      </div>
+    `;
+    if (tx.single_ms > 0) {
+      linesHtml += `
+        <div class="receipt-sub-row">
+          <span>• Single (${formatDurationAr(tx.single_ms)})</span>
+          <span>${fmtMoney(tx.single_cost)}</span>
+        </div>
+      `;
+    }
+    if (tx.multi_ms > 0) {
+      linesHtml += `
+        <div class="receipt-sub-row">
+          <span>• Multi (${formatDurationAr(tx.multi_ms)})</span>
+          <span>${fmtMoney(tx.multi_cost)}</span>
+        </div>
+      `;
+    }
+  }
+
+  (tx.items || []).forEach((it) => {
+    linesHtml += `
+      <div class="receipt-row">
+        <span>${it.name} × ${it.qty}</span>
+        <span>${fmtMoney(it.price * it.qty)}</span>
+      </div>
+    `;
+  });
+
+  let discountBlock = '';
+  if (discount > 0) {
+    discountBlock = `
+      <div class="receipt-divider"></div>
+      <div class="receipt-row">
+        <span>المجموع قبل الخصم:</span>
+        <span>${fmtMoney(subtotal)}</span>
+      </div>
+      <div class="receipt-row">
+        <span>الخصم:</span>
+        <span>- ${fmtMoney(discount)}</span>
+      </div>
+    `;
+  }
+
+  let paymentBlock = '';
+  if (tx.cash_paid > 0) {
+    paymentBlock += `<div class="receipt-row"><span>مدفوع كاش:</span><span>${fmtMoney(tx.cash_paid)}</span></div>`;
+  }
+  if (tx.vfcash_paid > 0) {
+    paymentBlock += `<div class="receipt-row"><span>مدفوع فودافون كاش:</span><span>${fmtMoney(tx.vfcash_paid)}</span></div>`;
+  }
+  if (tx.notah_paid > 0) {
+    paymentBlock += `<div class="receipt-row"><span>على النوتة:</span><span>${fmtMoney(tx.notah_paid)}</span></div>`;
+    (tx.notah_splits || []).forEach((sp) => {
+      paymentBlock += `<div class="receipt-sub-row"><span>• ${sp.clientName}</span><span>${fmtMoney(sp.amount)}</span></div>`;
+    });
+  }
+
+  return `
+    ${logoHtml}
+    <div class="receipt-header-text">${s.receiptHeader || 'ARENA POS'}</div>
+    <div class="receipt-divider"></div>
+    <div class="receipt-row"><span>التاريخ: ${tx.business_date || getTodayDateStr()}</span><span>${formatTimeShort(tx.created_at)}</span></div>
+    <div class="receipt-row"><span>الكاشير: ${tx.staff_name || '-'}</span><span>#${String(tx.id).slice(-5)}</span></div>
+    <div class="receipt-divider"></div>
+    ${linesHtml}
+    ${discountBlock}
+    <div class="receipt-divider"></div>
+    <div class="receipt-row" style="font-size:1.15em;font-weight:900;">
+      <span>الإجمالي النهائي:</span>
+      <span>${fmtMoney(tx.total)}</span>
+    </div>
+    ${paymentBlock}
+    <div class="receipt-divider"></div>
+    <div class="receipt-footer-text">${s.receiptFooter || ''}</div>
+  `;
+}
+
+function printThermalReceipt(tx) {
+  const el = $('receiptPrintContent');
+  if (!el) return;
+  const sizeClass = state.settings.receiptPaperSize === '58mm' ? 'receipt-58mm' : 'receipt-80mm';
+  const fontClass = state.settings.receiptFontSize === 'large'
+    ? 'receipt-font-large'
+    : state.settings.receiptFontSize === 'compact'
+      ? 'receipt-font-compact'
+      : '';
+  el.className = `receipt-paper ${sizeClass} ${fontClass}`;
+  el.innerHTML = buildReceiptHtml(tx);
+  setTimeout(() => window.print(), 120);
+}
+
+/* ==========================================================================
+   RESERVATIONS
+   ========================================================================== */
+function renderReservationsTab() {
+  const gameSel = $('resGameSelect');
+  if (gameSel) {
+    gameSel.innerHTML = (state.settings.games || DEFAULT_GAMES).map((g) => `<option value="${g}">${g}</option>`).join('');
+  }
+
+  const filter = $('resFilterStatus') ? $('resFilterStatus').value : 'Upcoming';
+  const tbody = $('reservationsTableBody');
+  if (!tbody) return;
+
   const upcomingCount = state.reservations.filter((r) => r.status === 'Upcoming').length;
-  const badge = document.getElementById('upcomingResBadge');
+  const badge = $('upcomingResBadge');
   if (badge) {
     badge.textContent = upcomingCount;
     badge.classList.toggle('hidden', upcomingCount === 0);
   }
 
-  const tbody = document.getElementById('reservationsTableBody');
-  if (!tbody) return;
-
-  const filter = document.getElementById('resFilterStatus')?.value || 'Upcoming';
   const list = state.reservations.filter((r) => filter === 'All' || r.status === filter);
+  tbody.innerHTML = list.map((r) => {
+    const badgeCls = r.status === 'Upcoming' ? 'badge-upcoming' : r.status === 'Completed' ? 'badge-completed' : 'badge-cancelled';
+    const statusAr = r.status === 'Upcoming' ? 'قادم' : r.status === 'Completed' ? 'تم الحضور' : 'ملغي';
 
-  if (list.length === 0) {
-    tbody.innerHTML = `<tr><td colspan="5" style="text-align:center;color:var(--text-muted)">لا توجد حجوزات في هذا التصنيف</td></tr>`;
+    return `
+      <tr>
+        <td>${formatDateTimeAr(r.datetime)}</td>
+        <td><strong>${r.client_name}</strong><br><small style="color:var(--text-muted)">${r.client_phone || ''}</small></td>
+        <td>${r.game} (${r.mode})${r.notes ? `<br><small style="color:var(--ps-cyan)">${r.notes}</small>` : ''}</td>
+        <td><span class="badge ${badgeCls}">${statusAr}</span></td>
+        <td>
+          ${r.status === 'Upcoming' ? `
+            <div class="btn-row">
+              <button type="button" class="btn btn-success btn-xs" onclick="startSessionFromReservation('${r.id}')">▶️ بدء بالغرفة</button>
+              <button type="button" class="btn btn-danger btn-xs" onclick="cancelReservation('${r.id}')">إلغاء</button>
+            </div>
+          ` : (r.assignedRoom || '-')}
+        </td>
+      </tr>
+    `;
+  }).join('') || '<tr><td colspan="5" style="text-align:center;color:var(--text-muted);">لا توجد حجوزات</td></tr>';
+}
+
+function addReservation() {
+  const client_name = $('resClientName').value.trim();
+  const datetime = $('resDateTime').value;
+  if (!client_name || !datetime) {
+    showToast('أدخل اسم العميل وموعد الحجز!', 'warning');
     return;
   }
 
-  tbody.innerHTML = list
-    .map((r) => {
-      const statusBadge =
-        r.status === 'Upcoming'
-          ? '<span class="badge badge-upcoming">قادم</span>'
-          : r.status === 'Completed'
-          ? '<span class="badge badge-completed">تم الحضور</span>'
-          : '<span class="badge badge-cancelled">ملغي</span>';
-
-      return `
-        <tr>
-          <td><strong>${formatDateTime(r.res_datetime)}</strong></td>
-          <td>
-            <strong>${escapeHtml(r.client_name)}</strong>
-            <div style="font-size:0.78rem;color:var(--text-muted)" dir="ltr">${escapeHtml(r.phone || '')}</div>
-          </td>
-          <td>
-            ${escapeHtml(r.game_name)} (${r.mode})
-            ${r.notes ? `<div style="font-size:0.76rem;color:var(--warning)">${escapeHtml(r.notes)}</div>` : ''}
-          </td>
-          <td>${statusBadge}</td>
-          <td>
-            ${
-              r.status === 'Upcoming'
-                ? `<div class="btn-row">
-                    <button class="btn btn-success btn-xs" onclick="startSessionFromReservation('${r.id}')">▶️ بدء الجلسة</button>
-                    <button class="btn btn-danger btn-xs" onclick="cancelReservation('${r.id}')">✕</button>
-                   </div>`
-                : '-'
-            }
-          </td>
-        </tr>
-      `;
-    })
-    .join('');
-}
-
-async function handleAddReservation() {
-  const clientName = document.getElementById('resClientName').value.trim();
-  const phone = document.getElementById('resClientPhone').value.trim();
-  const gameName = document.getElementById('resGameSelect').value;
-  const mode = document.getElementById('resModeSelect').value;
-  const dt = document.getElementById('resDateTime').value;
-  const notes = document.getElementById('resNotes').value.trim();
-
-  if (!clientName || !dt) return showToast('أدخل اسم العميل وموعد الحجز', 'warning');
-
-  const resv = {
-    id: 'res-' + Date.now(),
-    client_name: clientName,
-    phone,
-    game_name: gameName,
-    mode,
-    res_datetime: new Date(dt).toISOString(),
-    notes,
-    status: 'Upcoming',
-    created_at: new Date().toISOString(),
-    staff_name: activeUser.name
+  const resObj = {
+    id: uid('res'),
+    client_name,
+    client_phone: $('resClientPhone').value.trim(),
+    game: $('resGameSelect').value,
+    mode: $('resModeSelect').value,
+    datetime,
+    notes: $('resNotes').value.trim(),
+    status: 'Upcoming'
   };
 
-  state.reservations.push(resv);
-  state.reservations.sort((a, b) => new Date(a.res_datetime) - new Date(b.res_datetime));
-  await dbMutate('reservations', 'insert', resv);
+  state.reservations.unshift(resObj);
+  queueCloudSync('arena_reservations', 'upsert', resObj);
 
-  document.getElementById('resClientName').value = '';
-  document.getElementById('resClientPhone').value = '';
-  document.getElementById('resNotes').value = '';
-  renderAll();
-  showToast('تم تسجيل الحجز بنجاح ✅', 'success');
+  $('resClientName').value = '';
+  $('resClientPhone').value = '';
+  $('resNotes').value = '';
+  renderReservationsTab();
+  showToast('تم تسجيل الحجز بنجاح 📅', 'success');
 }
 
 function startSessionFromReservation(resId) {
-  const resv = state.reservations.find((r) => r.id === resId);
-  if (!resv) return;
-
-  const idleRoom = state.rooms.find((r) => r.status !== 'running');
-  if (!idleRoom) return showToast('جميع الغرف مشغولة حالياً! أقفل غرفة أولاً.', 'error');
-
-  switchTab('rooms');
-  openStartRoomModal(idleRoom.id, {
-    reservationId: resv.id,
-    clientName: resv.client_name,
-    clientPhone: resv.phone,
-    game: resv.game_name,
-    mode: resv.mode
-  });
-}
-
-async function cancelReservation(resId) {
-  const resv = state.reservations.find((r) => r.id === resId);
-  if (!resv) return;
-  resv.status = 'Cancelled';
-  await dbMutate('reservations', 'update', { status: 'Cancelled' }, 'id', resv.id);
-  renderAll();
-  showToast('تم إلغاء الحجز', 'warning');
-}
-
-/* ================= 14. SHIFT MANAGEMENT, BUSINESS DAY LOCK & WHATSAPP ================= */
-
-function getOpenShift() {
-  return state.shifts.find((s) => s.status === 'open') || null;
-}
-
-function requireOpenShift() {
-  if (!getOpenShift()) {
-    showToast('يجب فتح وردية واختيار اليوم أولاً من تبويب "الوردية والتسليم"!', 'error');
-    switchTab('shift');
-    return false;
-  }
-  return true;
-}
-
-function computeShiftStats(shift) {
-  const txs = state.transactions.filter((t) => String(t.shift_id) === String(shift.id));
-  const exps = state.expenses.filter((e) => String(e.shift_id) === String(shift.id));
-  const handovers = state.handovers.filter((h) => String(h.shift_id) === String(shift.id));
-
-  let roomsRev = 0;
-  let cafeRev = 0;
-  let notahCollected = 0;
-  let notahSales = 0;
-  let cashIn = 0;
-  let vfCashIn = 0;
-  const notahClientsToday = [];
-
-  txs.forEach((t) => {
-    const amt = Number(t.amount || 0);
-    const cash = Number(t.cash_amount || 0);
-    const vf = Number(t.vfcash_amount || 0);
-    const notah = Number(t.notah_amount || 0);
-
-    if (t.type === 'room') roomsRev += amt;
-    else if (t.type === 'cafe' || t.type === 'table') cafeRev += amt;
-    else if (t.type === 'notah_collection') notahCollected += amt;
-
-    cashIn += cash;
-    vfCashIn += vf;
-    notahSales += notah;
-
-    if (notah > 0 && t.client_name) {
-      notahClientsToday.push(`${t.client_name} (${notah} ج)`);
-    }
-  });
-
-  const expensesTotal = exps.reduce((s, e) => s + Number(e.amount || 0), 0);
-  const startCash = Number(shift.start_cash || 0);
-  const expectedDrawer = startCash + cashIn - expensesTotal;
-
-  return {
-    txs,
-    exps,
-    handovers,
-    startCash,
-    roomsRev,
-    cafeRev,
-    notahCollected,
-    notahSales,
-    cashIn,
-    vfCashIn,
-    expensesTotal,
-    expectedDrawer,
-    notahClientsToday
-  };
-}
-
-function renderShiftTab() {
-  const shift = getOpenShift();
-  const badge = document.getElementById('shiftStatusBadge');
-  const badgeText = document.getElementById('shiftStatusText');
-
-  if (!shift) {
-    badge.className = 'shift-pill closed';
-    badgeText.textContent = 'الوردية مغلقة';
-    document.getElementById('shiftClosedCard').classList.remove('hidden');
-    document.getElementById('shiftOpenCard').classList.add('hidden');
+  const res = state.reservations.find((r) => r.id === resId);
+  if (!res) return;
+  const idleRooms = state.rooms.filter((r) => r.status === 'idle');
+  if (!idleRooms.length) {
+    showToast('لا توجد غرف متاحة حالياً لبدء الحجز!', 'error');
     return;
   }
 
-  const bDay = getShiftBusinessDate(shift);
-  const bDayLabel = formatBusinessDateAr(bDay);
+  // Opens the Start Room modal with the room selector dropdown enabled so user picks the exact room!
+  openStartRoomModal(idleRooms[0].id, {
+    reservationId: res.id,
+    clientName: res.client_name,
+    clientPhone: res.client_phone,
+    game: res.game,
+    mode: res.mode
+  });
+}
 
-  badge.className = 'shift-pill open';
-  badgeText.textContent = `وردية ${bDay} (${shift.staff_name})`;
-  document.getElementById('shiftClosedCard').classList.add('hidden');
-  document.getElementById('shiftOpenCard').classList.remove('hidden');
+function cancelReservation(resId) {
+  const res = state.reservations.find((r) => r.id === resId);
+  if (!res) return;
+  res.status = 'Cancelled';
+  queueCloudSync('arena_reservations', 'upsert', res);
+  renderReservationsTab();
+  showToast('تم إلغاء الحجز', 'info');
+}
 
-  const st = computeShiftStats(shift);
-  document.getElementById('shiftBusinessDateBadge').textContent = bDayLabel;
-  document.getElementById('shiftBusinessDateNote').textContent = bDayLabel;
-  document.getElementById('shiftStaffName').textContent = shift.staff_name || '-';
-  document.getElementById('shiftStartTime').textContent = formatDateTime(shift.start_time);
-  document.getElementById('shiftStartCash').textContent = `${st.startCash} ج.م`;
-  document.getElementById('shiftRoomsRev').textContent = `${st.roomsRev} ج.م`;
-  document.getElementById('shiftCafeRev').textContent = `${st.cafeRev} ج.م`;
-  document.getElementById('shiftNotahCollected').textContent = `${st.notahCollected} ج.م`;
-  document.getElementById('shiftNotahSales').textContent = `${st.notahSales} ج.م`;
-  document.getElementById('shiftVfCashTotal').textContent = `${st.vfCashIn} ج.م`;
-  document.getElementById('shiftExpensesTotal').textContent = `${st.expensesTotal} ج.م`;
-  document.getElementById('shiftExpectedDrawer').textContent = `${st.expectedDrawer} ج.م`;
+/* ==========================================================================
+   CLIENTS & NOTAH LEDGER
+   ========================================================================== */
+function renderClientsTab() {
+  const totalDebt = state.clients.reduce((s, c) => s + (Number(c.notah_balance) || 0), 0);
+  if ($('totalMarketNotah')) $('totalMarketNotah').textContent = fmtMoney(totalDebt);
 
-  document.getElementById('shiftExpensesList').innerHTML =
-    st.exps.length === 0
-      ? `<p class="hint-text">لا توجد مصروفات في هذه الوردية</p>`
-      : st.exps
-          .map(
-            (e) => `
-          <div class="mini-list-item">
-            <span>${escapeHtml(e.title)}</span>
-            <strong style="color:var(--danger)">-${e.amount} ج.م</strong>
+  const search = ($('clientSearchInput') ? $('clientSearchInput').value : '').trim().toLowerCase();
+  const tbody = $('clientsTableBody');
+  if (!tbody) return;
+
+  const filtered = state.clients.filter((c) =>
+    !search || c.name.toLowerCase().includes(search) || (c.phone || '').includes(search)
+  );
+
+  tbody.innerHTML = filtered.map((c) => {
+    const bal = Number(c.notah_balance) || 0;
+    return `
+      <tr>
+        <td><strong>${c.name}</strong></td>
+        <td dir="ltr">${c.phone || '-'}</td>
+        <td><strong style="color:${bal > 0 ? 'var(--warning)' : 'var(--success)'};">${fmtMoney(bal)}</strong></td>
+        <td><button type="button" class="btn btn-primary btn-xs" onclick="openClientDetailsModal('${c.id}')">📒 كشف الحساب</button></td>
+      </tr>
+    `;
+  }).join('') || '<tr><td colspan="4" style="text-align:center;color:var(--text-muted);">لا يوجد عملاء</td></tr>';
+}
+
+function addNewClient() {
+  const name = $('newClientName').value.trim();
+  const phone = $('newClientPhone').value.trim();
+  if (!name) {
+    showToast('أدخل اسم العميل!', 'warning');
+    return;
+  }
+  const client = { id: uid('cli'), name, phone, notah_balance: 0 };
+  state.clients.unshift(client);
+  queueCloudSync('arena_clients', 'upsert', client);
+  $('newClientName').value = '';
+  $('newClientPhone').value = '';
+  renderClientsTab();
+  showToast('تم حفظ بروفايل العميل ✅', 'success');
+}
+
+function saveQuickClientFromCheckout() {
+  const name = $('quickClientName').value.trim();
+  const phone = $('quickClientPhone').value.trim();
+  if (!name) {
+    showToast('أدخل اسم العميل الجديد!', 'warning');
+    return;
+  }
+  const client = { id: uid('cli'), name, phone, notah_balance: 0 };
+  state.clients.unshift(client);
+  queueCloudSync('arena_clients', 'upsert', client);
+
+  $('quickClientName').value = '';
+  $('quickClientPhone').value = '';
+  $('quickClientForm').classList.add('hidden');
+
+  const emptyRow = state.checkout.notahSplits.find((r) => !r.clientId);
+  if (emptyRow) {
+    emptyRow.clientId = client.id;
+  } else {
+    state.checkout.notahSplits.push({ id: uid('ns'), clientId: client.id, amount: 0 });
+  }
+  renderNotahSplitsList();
+  renderClientsTab();
+  showToast(`تم إضافة واختيار العميل (${name}) ✅`, 'success');
+}
+
+function openClientDetailsModal(clientId) {
+  const client = state.clients.find((c) => c.id === clientId);
+  if (!client) return;
+  $('detailClientId').value = client.id;
+  $('detailClientName').textContent = client.name;
+  $('detailClientPhone').textContent = client.phone || 'بدون رقم';
+  $('detailClientDebt').textContent = fmtMoney(client.notah_balance || 0);
+  $('collectNotahAmount').value = '';
+  $('collectNotahNote').value = '';
+
+  const history = state.notahLedger.filter((l) => l.client_id === client.id);
+  $('clientNotahHistoryList').innerHTML = history.map((h) => `
+    <div class="ledger-item ${h.entry_type === 'payment' ? 'payment' : ''}">
+      <div style="display:flex;justify-content:space-between;font-weight:800;">
+        <span>${h.entry_type === 'payment' ? '💰 سداد / تحصيل' : '📒 إضافة على النوتة'}</span>
+        <strong style="color:${h.entry_type === 'payment' ? 'var(--success)' : 'var(--warning)'};">
+          ${h.entry_type === 'payment' ? '-' : '+'} ${fmtMoney(h.amount)}
+        </strong>
+      </div>
+      <div style="font-size:0.78rem;color:var(--text-muted);margin-top:3px;">
+        ${h.business_date} (${formatTimeShort(h.created_at)}) — ${h.note || ''} (${h.staff_name || ''})
+      </div>
+    </div>
+  `).join('') || '<p class="hint-text">لا توجد حركات مسجلة لهذا العميل.</p>';
+
+  openModal('modalClientDetails');
+}
+
+function confirmNotahCollection() {
+  if (!getActiveShift()) {
+    showToast('افتح وردية الأول لتسجيل تحصيل النوتة في الدرج!', 'warning');
+    return;
+  }
+  const clientId = $('detailClientId').value;
+  const client = state.clients.find((c) => c.id === clientId);
+  if (!client) return;
+
+  const amount = Number($('collectNotahAmount').value) || 0;
+  if (amount <= 0) {
+    showToast('أدخل مبلغ التحصيل!', 'warning');
+    return;
+  }
+
+  const method = $('collectNotahMethod').value;
+  const note = $('collectNotahNote').value.trim() || 'سداد من حساب النوتة';
+
+  client.notah_balance = Math.max(0, (Number(client.notah_balance) || 0) - amount);
+  queueCloudSync('arena_clients', 'upsert', client);
+
+  const entry = {
+    id: uid('nl'),
+    client_id: client.id,
+    business_date: getCurrentBusinessDate(),
+    created_at: new Date().toISOString(),
+    entry_type: 'payment',
+    amount,
+    method,
+    note,
+    staff_name: state.currentUser ? state.currentUser.name : 'كاشير'
+  };
+  state.notahLedger.unshift(entry);
+  queueCloudSync('arena_notah_ledger', 'upsert', entry);
+
+  openClientDetailsModal(client.id);
+  renderClientsTab();
+  renderShiftTab();
+  showToast(`تم تحصيل ${fmtMoney(amount)} من ${client.name} ✅`, 'success');
+}
+
+/* ==========================================================================
+   UNIFIED FINANCIAL CALCULATIONS (SHIFT & DASHBOARD)
+   ========================================================================== */
+function computeFinancialStats(txList, expList, ledgerList, startCash = 0) {
+  let roomsRev = 0;
+  let cafeRev = 0;
+  let cashSales = 0;
+  let vfCashSales = 0;
+  let notahSales = 0;
+
+  txList.forEach((tx) => {
+    const total = Number(tx.total) || 0;
+    const discount = Number(tx.discount) || 0;
+    if (tx.type === 'room') {
+      const rawTime = Number(tx.room_time_cost) || 0;
+      const rawOrders = Number(tx.orders_cost) || 0;
+      const netTime = Math.max(0, rawTime - discount);
+      const excessDisc = Math.max(0, discount - rawTime);
+      const netOrders = Math.max(0, rawOrders - excessDisc);
+      roomsRev += netTime;
+      cafeRev += netOrders;
+    } else {
+      cafeRev += total;
+    }
+
+    cashSales += Number(tx.cash_paid) || 0;
+    vfCashSales += Number(tx.vfcash_paid) || 0;
+    notahSales += Number(tx.notah_paid) || 0;
+  });
+
+  const totalSales = roomsRev + cafeRev;
+
+  let notahCollectedCash = 0;
+  let notahCollectedVf = 0;
+  ledgerList.forEach((l) => {
+    if (l.entry_type === 'payment') {
+      if (l.method === 'vfcash') notahCollectedVf += Number(l.amount) || 0;
+      else notahCollectedCash += Number(l.amount) || 0;
+    }
+  });
+
+  const notahCollected = notahCollectedCash + notahCollectedVf;
+  const vfCashTotal = vfCashSales + notahCollectedVf;
+  const expensesTotal = expList.reduce((s, e) => s + (Number(e.amount) || 0), 0);
+  const expectedDrawer = (Number(startCash) || 0) + cashSales + notahCollectedCash - expensesTotal;
+
+  return {
+    totalSales,
+    roomsRev,
+    cafeRev,
+    cashSales,
+    vfCashTotal,
+    notahSales,
+    notahCollected,
+    notahCollectedCash,
+    expensesTotal,
+    expectedDrawer
+  };
+}
+
+function getShiftStats(shift) {
+  if (!shift) {
+    return computeFinancialStats([], [], [], 0);
+  }
+  const shiftTxs = state.transactions.filter((t) => t.shift_id === shift.id || (!t.shift_id && t.business_date === shift.business_date));
+  const shiftExps = state.expenses.filter((e) => e.shift_id === shift.id || (!e.shift_id && e.business_date === shift.business_date));
+  const shiftLedger = state.notahLedger.filter((l) => l.business_date === shift.business_date && l.entry_type === 'payment');
+  return computeFinancialStats(shiftTxs, shiftExps, shiftLedger, shift.start_cash || 0);
+}
+
+/* ==========================================================================
+   SHIFT TAB, HANDOVER & CLOSE SHIFT
+   ========================================================================== */
+function renderShiftTab() {
+  const active = getActiveShift();
+  const pill = $('shiftStatusBadge');
+  const pillText = $('shiftStatusText');
+
+  if (!active) {
+    if (pill) pill.className = 'shift-pill closed';
+    if (pillText) pillText.textContent = 'الوردية مغلقة';
+    $('shiftClosedCard').classList.remove('hidden');
+    $('shiftOpenCard').classList.add('hidden');
+    return;
+  }
+
+  if (pill) pill.className = 'shift-pill open';
+  if (pillText) pillText.textContent = `وردية: ${active.business_date}`;
+  $('shiftClosedCard').classList.add('hidden');
+  $('shiftOpenCard').classList.remove('hidden');
+
+  $('shiftBusinessDateBadge').textContent = `${active.business_date} (${getArabicDayName(active.business_date)})`;
+  $('shiftBusinessDateNote').textContent = active.business_date;
+  $('shiftStaffName').textContent = active.staff_name;
+  $('shiftStartTime').textContent = formatDateTimeAr(active.opened_at);
+
+  const stats = getShiftStats(active);
+  $('shiftStartCash').textContent = fmtMoney(active.start_cash || 0);
+  $('shiftTotalSales').textContent = fmtMoney(stats.totalSales);
+  $('shiftRoomsRev').textContent = fmtMoney(stats.roomsRev);
+  $('shiftCafeRev').textContent = fmtMoney(stats.cafeRev);
+  $('shiftNotahCollected').textContent = fmtMoney(stats.notahCollected);
+  $('shiftNotahSales').textContent = fmtMoney(stats.notahSales);
+  $('shiftVfCashTotal').textContent = fmtMoney(stats.vfCashTotal);
+  $('shiftExpensesTotal').textContent = fmtMoney(stats.expensesTotal);
+  $('shiftExpectedDrawer').textContent = fmtMoney(stats.expectedDrawer);
+
+  // Expenses list
+  const shiftExps = state.expenses.filter((e) => e.shift_id === active.id || (!e.shift_id && e.business_date === active.business_date));
+  $('shiftExpensesList').innerHTML = shiftExps.map((e) => `
+    <div class="mini-list-item expense-item">
+      <span>💸 ${e.title} <small style="color:var(--text-muted)">(${formatTimeShort(e.created_at)})</small></span>
+      <strong style="color:var(--danger)">- ${fmtMoney(e.amount)}</strong>
+    </div>
+  `).join('') || '<p class="hint-text">لا توجد مصروفات مسجلة في هذه الوردية</p>';
+
+  // Handovers list
+  const shiftHandovers = state.handovers.filter((h) => h.shift_id === active.id);
+  $('shiftHandoversList').innerHTML = shiftHandovers.map((h) => `
+    <div class="mini-list-item">
+      <span>🤝 من <strong>${h.from_staff}</strong> إلى <strong>${h.to_staff}</strong> (${formatTimeShort(h.created_at)})</span>
+      <strong>درج: ${fmtMoney(h.actual_cash)}</strong>
+    </div>
+  `).join('') || '<p class="hint-text">لا توجد تسليمات داخلية في هذه الوردية</p>';
+
+  // Unified Transactions + Expenses chronological feed
+  const shiftTxs = state.transactions.filter((t) => t.shift_id === active.id || (!t.shift_id && t.business_date === active.business_date));
+  const combinedFeed = [
+    ...shiftTxs.map((t) => ({ kind: 'tx', ts: new Date(t.created_at).getTime() || 0, data: t })),
+    ...shiftExps.map((e) => ({ kind: 'exp', ts: new Date(e.created_at).getTime() || 0, data: e }))
+  ].sort((a, b) => b.ts - a.ts);
+
+  $('shiftTransactionsList').innerHTML = combinedFeed.map((entry) => {
+    if (entry.kind === 'exp') {
+      const e = entry.data;
+      return `
+        <div class="mini-list-item expense-item">
+          <div>
+            <strong>💸 مصروف: ${e.title}</strong>
+            <div style="font-size:0.76rem;color:var(--text-muted);">${formatTimeShort(e.created_at)} — ${e.staff_name || ''}</div>
           </div>
-        `
-          )
-          .join('');
+          <strong style="color:var(--danger);">- ${fmtMoney(e.amount)}</strong>
+        </div>
+      `;
+    }
+    const t = entry.data;
+    return `
+      <div class="mini-list-item tx-item">
+        <div>
+          <strong>🧾 ${t.title}</strong>
+          <div style="font-size:0.76rem;color:var(--text-muted);">${formatTimeShort(t.created_at)} — ${t.staff_name || ''}</div>
+        </div>
+        <div class="btn-row" style="align-items:center;">
+          <strong style="color:var(--success);">+ ${fmtMoney(t.total)}</strong>
+          <button type="button" class="btn btn-outline btn-xs" onclick="reprintTxById('${t.id}')">🖨️</button>
+        </div>
+      </div>
+    `;
+  }).join('') || '<p class="hint-text">لا توجد حركات مسجلة في الوردية بعد</p>';
+}
 
-  document.getElementById('shiftHandoversList').innerHTML =
-    st.handovers.length === 0
-      ? `<p class="hint-text">لم يتم تسليم الوردية بين موظفين بعد</p>`
-      : st.handovers
-          .map(
-            (h) => `
-          <div class="mini-list-item">
-            <div>
-              <strong>من ${escapeHtml(h.from_staff)} ⬅️ إلى ${escapeHtml(h.to_staff)}</strong>
-              <div style="font-size:0.75rem;color:var(--text-muted)">${formatDateTime(h.time)} • كاش مُسلَّم: ${h.actual_cash} ج ${h.notes ? `(${escapeHtml(h.notes)})` : ''}</div>
-            </div>
-            <span class="badge ${h.diff === 0 ? 'badge-completed' : 'badge-debt'}">${h.diff === 0 ? 'مظبوط' : `فرق ${h.diff} ج`}</span>
-          </div>
-        `
-          )
-          .join('');
-
-  document.getElementById('shiftTransactionsList').innerHTML =
-    st.txs.length === 0
-      ? `<p class="hint-text">لا توجد حركات مسجلة بعد</p>`
-      : st.txs
-          .map(
-            (t) => `
-          <div class="mini-list-item">
-            <div>
-              <strong>${escapeHtml(t.description)}</strong>
-              <div style="font-size:0.75rem;color:var(--text-muted)">${escapeHtml(t.payment_summary || '')}</div>
-            </div>
-            <strong style="color:var(--success)">${t.amount} ج</strong>
-          </div>
-        `
-          )
-          .join('');
+function reprintTxById(txId) {
+  const tx = state.transactions.find((t) => t.id === txId);
+  if (tx) printThermalReceipt(tx);
 }
 
 function openOpenShiftModal() {
-  const dateInp = document.getElementById('openShiftBusinessDate');
-  const hintEl = document.getElementById('openShiftDayNameHint');
-  const todayStr = getLocalDateStr();
-  if (dateInp) {
-    dateInp.value = todayStr;
-    if (hintEl) hintEl.textContent = `سيتم تسجيل وتقفيل الوردية بالكامل على: ${formatBusinessDateAr(todayStr)}`;
-  }
-  document.getElementById('openShiftCashInput').value = 0;
+  const today = getTodayDateStr();
+  $('openShiftBusinessDate').value = today;
+  $('openShiftDayNameHint').textContent = `يوم: ${getArabicDayName(today)}`;
+  $('openShiftCashInput').value = '0';
   openModal('modalOpenShift');
 }
 
-async function confirmOpenShift() {
-  if (getOpenShift()) return;
-  const businessDate = document.getElementById('openShiftBusinessDate')?.value || '';
-  if (!businessDate) {
-    return showToast('يجب اختيار يوم العمل أولاً قبل فتح الوردية!', 'warning');
+function confirmOpenShift() {
+  const bDate = $('openShiftBusinessDate').value;
+  if (!bDate) {
+    showToast('اختر يوم العمل الأول!', 'warning');
+    return;
   }
-
-  const startCash = Math.max(0, Number(document.getElementById('openShiftCashInput').value || 0));
-  const shiftId = 'sh-' + Date.now();
-  const shift = {
-    id: shiftId,
-    staff_name: activeUser.name,
-    business_date: businessDate,
-    start_time: new Date().toISOString(),
-    end_time: null,
-    start_cash: startCash,
-    end_cash: 0,
-    expected_cash: startCash,
+  const startCash = Math.max(0, Number($('openShiftCashInput').value) || 0);
+  const newShift = {
+    id: uid('shf'),
+    business_date: bDate,
+    opened_at: new Date().toISOString(),
+    closed_at: null,
     status: 'open',
-    total_notah_sales: 0,
-    total_notah_collections: 0
+    staff_id: state.currentUser ? state.currentUser.id : '',
+    staff_name: state.currentUser ? state.currentUser.name : 'كاشير',
+    start_cash: startCash
   };
 
-  state.shifts.unshift(shift);
-  state.shiftDays[String(shiftId)] = businessDate;
-  await dbMutate('shifts', 'insert', shift);
-  await saveSystemStateKey('arena_shift_days', state.shiftDays);
-
+  state.shifts.unshift(newShift);
+  queueCloudSync('arena_shifts', 'upsert', newShift);
   closeModal('modalOpenShift');
   renderAll();
-  showToast(`تم فتح الوردية على ${formatBusinessDateAr(businessDate)} 🟢`, 'success');
+  showToast(`تم فتح الوردية ليوم ${bDate} 🟢`, 'success');
 }
 
-async function handleAddExpense() {
-  if (!requireOpenShift()) return;
-  const title = document.getElementById('expenseTitle').value.trim();
-  const amount = Number(document.getElementById('expenseAmount').value || 0);
-  if (!title || amount <= 0) return showToast('أدخل بيان المصروف والمبلغ', 'warning');
+function addShiftExpense() {
+  const active = getActiveShift();
+  if (!active) {
+    showToast('افتح وردية الأول قبل تسجيل المصروفات!', 'warning');
+    return;
+  }
+  const title = $('expenseTitle').value.trim();
+  const amount = Number($('expenseAmount').value) || 0;
+  if (!title || amount <= 0) {
+    showToast('أدخل بيان المصروف والمبلغ!', 'warning');
+    return;
+  }
 
-  const shift = getOpenShift();
   const exp = {
-    id: 'exp-' + Date.now(),
-    shift_id: shift.id,
-    business_date: getShiftBusinessDate(shift),
+    id: uid('exp'),
+    shift_id: active.id,
+    business_date: active.business_date,
+    created_at: new Date().toISOString(),
     title,
     amount,
-    staff_name: activeUser.name,
-    created_at: new Date().toISOString()
+    staff_name: state.currentUser ? state.currentUser.name : 'كاشير'
   };
 
   state.expenses.unshift(exp);
-  await dbMutate('expenses', 'insert', exp);
-  document.getElementById('expenseTitle').value = '';
-  document.getElementById('expenseAmount').value = '';
-  renderAll();
-  showToast('تم خصم المصروف من الدرج ✅', 'success');
+  queueCloudSync('arena_expenses', 'upsert', exp);
+  $('expenseTitle').value = '';
+  $('expenseAmount').value = '';
+  renderShiftTab();
+  if (mgmtUnlocked) renderDashboard();
+  showToast(`تم خصم مصروف (${title}) بقيمة ${fmtMoney(amount)} 💸`, 'warning');
 }
 
-function openHandoverShiftModal() {
-  const shift = getOpenShift();
-  if (!shift) return;
-  if (state.users.length < 2) {
-    return showToast('أضف حساب موظف آخر أولاً من الداشبورد أو الإعدادات لتسليمه الوردية!', 'warning');
-  }
+function openHandoverModal() {
+  const active = getActiveShift();
+  if (!active) return;
+  const stats = getShiftStats(active);
 
-  const st = computeShiftStats(shift);
-  const bDayLabel = formatBusinessDateAr(getShiftBusinessDate(shift));
-  document.getElementById('handoverSummaryPreview').innerHTML = `
-    <div>📅 يوم العمل: <strong>${bDayLabel}</strong></div>
-    <div>👤 الموظف المُسلِّم: <strong>${escapeHtml(activeUser.name)}</strong></div>
-    <div>🎮 الغرف: <strong>${st.roomsRev} ج</strong> | ☕ الكافيه والترابيزات: <strong>${st.cafeRev} ج</strong></div>
-    <div>📒 نوتة اليوم: <strong>${st.notahSales} ج</strong> | ✅ تحصيل نوتة: <strong>${st.notahCollected} ج</strong></div>
-    <div style="color:var(--success);font-size:1.05rem;margin-top:4px;">💰 الكاش المفروض تسليمه في الدرج: <strong>${st.expectedDrawer} ج.م</strong></div>
+  $('handoverSummaryPreview').innerHTML = `
+    <div>يوم العمل: <strong>${active.business_date}</strong> | المُسلِّم: <strong>${active.staff_name}</strong></div>
+    <div>إجمالي مبيعات الوردية: <strong>${fmtMoney(stats.totalSales)}</strong> | المصروفات: <strong>${fmtMoney(stats.expensesTotal)}</strong></div>
+    <div>الكاش المفروض بالدرج الآن: <strong style="color:var(--success)">${fmtMoney(stats.expectedDrawer)}</strong></div>
   `;
 
-  const sel = document.getElementById('handoverTargetUser');
-  sel.innerHTML = state.users
-    .filter((u) => String(u.id) !== String(activeUser.id))
-    .map((u) => `<option value="${u.id}">${escapeHtml(u.name)} (${isUserAdmin(u) ? 'مدير Admin' : 'موظف'})</option>`)
-    .join('');
-
-  document.getElementById('handoverTargetPin').value = '';
-  document.getElementById('handoverActualCash').value = st.expectedDrawer;
-  document.getElementById('handoverNotes').value = '';
-  document.getElementById('preHandoverInputBox').classList.remove('hidden');
-  document.getElementById('postHandoverActionsBox').classList.add('hidden');
-  updateHandoverDiff();
+  const sel = $('handoverTargetUser');
+  sel.innerHTML = state.users.map((u) => `<option value="${u.id}">${u.name}</option>`).join('');
+  $('handoverTargetPin').value = '';
+  $('handoverActualCash').value = String(stats.expectedDrawer);
+  $('handoverNotes').value = '';
+  $('preHandoverInputBox').classList.remove('hidden');
+  $('postHandoverActionsBox').classList.add('hidden');
   openModal('modalHandoverShift');
 }
 
-function updateHandoverDiff() {
-  const shift = getOpenShift();
-  if (!shift) return;
-  const st = computeShiftStats(shift);
-  const actual = Number(document.getElementById('handoverActualCash').value || 0);
-  const diff = actual - st.expectedDrawer;
-  const badge = document.getElementById('handoverDiffBadge');
-  if (diff === 0) {
-    badge.className = 'balance-status valid';
-    badge.textContent = 'الكاش المُسلَّم مطابق للدرج تماماً ✅';
-  } else if (diff > 0) {
-    badge.className = 'balance-status valid';
-    badge.textContent = `زيادة في الدرج عند التسليم: +${diff} ج.م`;
-  } else {
-    badge.className = 'balance-status invalid';
-    badge.textContent = `عجز في الدرج عند التسليم: ${diff} ج.م ⚠️`;
-  }
-}
+function confirmHandoverShift() {
+  const active = getActiveShift();
+  if (!active) return;
+  const targetUserId = $('handoverTargetUser').value;
+  const targetPin = $('handoverTargetPin').value.trim();
+  const targetUser = state.users.find((u) => u.id === targetUserId && String(u.pin) === targetPin);
 
-async function confirmHandoverShift() {
-  const shift = getOpenShift();
-  if (!shift) return;
-
-  const targetId = document.getElementById('handoverTargetUser').value;
-  const targetUser = state.users.find((u) => String(u.id) === String(targetId));
-  const pin = document.getElementById('handoverTargetPin').value.trim();
-  const actualCash = Number(document.getElementById('handoverActualCash').value || 0);
-  const notes = document.getElementById('handoverNotes').value.trim();
-
-  if (!targetUser) return showToast('اختر الموظف المُستلِم', 'warning');
-  if (String(targetUser.pin) !== pin) {
-    return showToast('الباسورد / PIN للموظف المُستلِم غير صحيح!', 'error');
+  if (!targetUser) {
+    showToast('الباسورد / PIN للموظف المستلم غير صحيح!', 'error');
+    return;
   }
 
-  const st = computeShiftStats(shift);
-  const diff = actualCash - st.expectedDrawer;
-  const fromName = activeUser.name;
-  const nowIso = new Date().toISOString();
-  const bDay = getShiftBusinessDate(shift);
+  const stats = getShiftStats(active);
+  const actualCash = Number($('handoverActualCash').value) || 0;
+  const diff = actualCash - stats.expectedDrawer;
+  const notes = $('handoverNotes').value.trim();
 
-  const handoverRecord = {
-    id: 'ho-' + Date.now(),
-    shift_id: shift.id,
-    business_date: bDay,
-    from_staff: fromName,
+  const ho = {
+    id: uid('ho'),
+    shift_id: active.id,
+    business_date: active.business_date,
+    created_at: new Date().toISOString(),
+    from_staff: active.staff_name,
     to_staff: targetUser.name,
-    time: nowIso,
-    expected_cash: st.expectedDrawer,
+    expected_cash: stats.expectedDrawer,
     actual_cash: actualCash,
     diff,
     notes
   };
+  state.handovers.unshift(ho);
+  queueCloudSync('arena_handovers', 'upsert', ho);
 
-  state.handovers.unshift(handoverRecord);
-  shift.staff_name = targetUser.name;
+  active.staff_id = targetUser.id;
+  active.staff_name = targetUser.name;
+  queueCloudSync('arena_shifts', 'upsert', active);
 
-  await saveSystemStateKey('arena_handovers', state.handovers);
-  await dbMutate('shifts', 'update', { staff_name: targetUser.name }, 'id', shift.id);
+  state.currentUser = targetUser;
+  sessionStorage.setItem(STORAGE_KEYS.SESSION_USER, JSON.stringify(targetUser));
+  $('currentUserBadge').textContent = `${targetUser.name} (${targetUser.role === 'admin' ? 'مدير' : 'كاشير'})`;
 
-  activeUser = targetUser;
-  isMgmtUnlocked = isUserAdmin(targetUser);
-  sessionStorage.setItem(STORAGE_KEYS.USER, JSON.stringify(targetUser));
-  document.getElementById('currentUserBadge').textContent =
-    `${activeUser.name} (${isUserAdmin(activeUser) ? 'مدير Admin' : 'موظف / كاشير'})`;
-  updateMgmtLockUI();
+  $('preHandoverInputBox').classList.add('hidden');
+  $('postHandoverActionsBox').classList.remove('hidden');
 
-  lastHandoverReportText = [
-    `🤝 *إشعار تسليم وردية - ARENA POS*`,
-    `━━━━━━━━━━━━━━━━━━`,
-    `📅 *يوم العمل:* ${formatBusinessDateAr(bDay)}`,
-    `📤 *المُسلِّم:* ${fromName}`,
-    `📥 *المُستلِم:* ${targetUser.name}`,
-    `🕒 *الوقت الفعلي:* ${formatDateTime(nowIso)}`,
-    `💰 *الكاش المفروض بالدرج:* ${st.expectedDrawer} ج.م`,
-    `🧮 *الكاش المُسلَّم فعلياً:* ${actualCash} ج.م`,
-    `⚖️ *الفرق:* ${diff === 0 ? 'مظبوط (0 ج)' : `${diff} ج`}`,
-    notes ? `📝 *ملاحظات:* ${notes}` : ''
-  ]
-    .filter(Boolean)
-    .join('\n');
+  $('btnSendHandoverWhatsapp').onclick = () => {
+    const msg = `🤝 تسليم وردية — ${state.settings.brandTitle}\n📅 يوم: ${active.business_date}\n👤 من: ${ho.from_staff} ➡️ إلى: ${ho.to_staff}\n💵 الدرج المتوقع: ${fmtMoney(ho.expected_cash)}\n✅ الدرج الفعلي: ${fmtMoney(ho.actual_cash)}\n📊 الفرق: ${fmtMoney(ho.diff)}`;
+    openWhatsappWithText(msg);
+  };
 
-  document.getElementById('preHandoverInputBox').classList.add('hidden');
-  document.getElementById('postHandoverActionsBox').classList.remove('hidden');
-  renderAll();
+  renderShiftTab();
   showToast(`تم تسليم الوردية إلى ${targetUser.name} بنجاح 🤝`, 'success');
 }
 
 function openCloseShiftModal() {
-  const shift = getOpenShift();
-  if (!shift) return;
+  const active = getActiveShift();
+  if (!active) return;
 
-  const busyRooms = state.rooms.filter((r) => r.status === 'running');
+  const busyRooms = state.rooms.filter((r) => r.status !== 'idle');
   if (busyRooms.length > 0) {
-    showToast(`تنبيه: يوجد ${busyRooms.length} غرفة ما زالت شغالة! يفضل تقفيلها أولاً.`, 'warning');
+    showToast(`يوجد ${busyRooms.length} غرفة شغالة حالياً — قفّل الغرف الأول قبل تقفيل الوردية!`, 'warning');
+    return;
   }
 
-  const st = computeShiftStats(shift);
-  const bDayLabel = formatBusinessDateAr(getShiftBusinessDate(shift));
-
-  document.getElementById('closeShiftSummaryPreview').innerHTML = `
-    <div style="color:var(--ps-cyan);font-weight:800;">📅 يوم العمل: ${bDayLabel}</div>
-    <div>👤 الكاشير: <strong>${escapeHtml(shift.staff_name)}</strong></div>
-    <div>💵 رصيد بداية الدرج: <strong>${st.startCash} ج.م</strong></div>
-    <div>🎮 إيراد الغرف: <strong>${st.roomsRev} ج.م</strong> | ☕ الترابيزات والكافيه: <strong>${st.cafeRev} ج.م</strong></div>
-    <div>✅ تحصيل نوتة سابقة: <strong>${st.notahCollected} ج.م</strong></div>
-    <div>📒 مبيعات على النوتة اليوم: <strong>${st.notahSales} ج.م</strong></div>
-    <div>📱 فودافون كاش: <strong>${st.vfCashIn} ج.م</strong> | 💸 مصروفات: <strong>${st.expensesTotal} ج.م</strong></div>
-    <hr class="divider"/>
-    <div style="font-size:1.05rem;color:var(--success)">💰 الكاش المفروض بالدرج: <strong>${st.expectedDrawer} ج.م</strong></div>
+  const stats = getShiftStats(active);
+  $('closeShiftSummaryPreview').innerHTML = `
+    <div>يوم العمل: <strong>${active.business_date}</strong> | الكاشير: <strong>${active.staff_name}</strong></div>
+    <div>إجمالي المبيعات (لعب + كافيه): <strong style="color:var(--success)">${fmtMoney(stats.totalSales)}</strong> (لعب: ${fmtMoney(stats.roomsRev)} | كافيه: ${fmtMoney(stats.cafeRev)})</div>
+    <div>نوتة آجلة: <strong>${fmtMoney(stats.notahSales)}</strong> | تحصيل نوتة: <strong>${fmtMoney(stats.notahCollected)}</strong> | فودافون كاش: <strong>${fmtMoney(stats.vfCashTotal)}</strong></div>
+    <div>المصروفات: <strong style="color:var(--danger)">${fmtMoney(stats.expensesTotal)}</strong> | الكاش المفروض بالدرج: <strong style="color:var(--ps-cyan)">${fmtMoney(stats.expectedDrawer)}</strong></div>
   `;
 
-  document.getElementById('closeShiftActualCash').value = st.expectedDrawer;
-  document.getElementById('preCloseInputBox').classList.remove('hidden');
-  document.getElementById('postCloseActionsBox').classList.add('hidden');
-  updateCloseShiftDiff();
+  $('closeShiftActualCash').value = String(stats.expectedDrawer);
+  $('closeShiftDiffBadge').className = 'balance-status valid';
+  $('closeShiftDiffBadge').textContent = 'المبلغ مطابق للدرج ✅';
+  $('preCloseInputBox').classList.remove('hidden');
+  $('postCloseActionsBox').classList.add('hidden');
   openModal('modalCloseShift');
 }
 
-function updateCloseShiftDiff() {
-  const shift = getOpenShift();
-  if (!shift) return;
-  const st = computeShiftStats(shift);
-  const actual = Number(document.getElementById('closeShiftActualCash').value || 0);
-  const diff = actual - st.expectedDrawer;
-  const el = document.getElementById('closeShiftDiffBadge');
+function confirmCloseShift() {
+  const active = getActiveShift();
+  if (!active) return;
+  const stats = getShiftStats(active);
+  const actualCash = Number($('closeShiftActualCash').value) || 0;
+  const diff = actualCash - stats.expectedDrawer;
 
-  if (diff === 0) {
-    el.className = 'balance-status valid';
-    el.textContent = 'الدرج مظبوط تماماً بدون عجز أو زيادة ✅';
-  } else if (diff > 0) {
-    el.className = 'balance-status valid';
-    el.textContent = `زيادة في الدرج: +${diff} ج.م`;
-  } else {
-    el.className = 'balance-status invalid';
-    el.textContent = `عجز في الدرج: ${diff} ج.م ⚠️`;
-  }
-}
+  active.status = 'closed';
+  active.closed_at = new Date().toISOString();
+  active.actual_cash = actualCash;
+  active.expected_cash = stats.expectedDrawer;
+  active.cash_diff = diff;
 
-async function confirmCloseShift() {
-  const shift = getOpenShift();
-  if (!shift) return;
+  queueCloudSync('arena_shifts', 'upsert', active);
 
-  const st = computeShiftStats(shift);
-  const actualCash = Number(document.getElementById('closeShiftActualCash').value || 0);
-  const diff = actualCash - st.expectedDrawer;
-  const endTime = new Date().toISOString();
-  const bDay = getShiftBusinessDate(shift);
-
-  shift.status = 'closed';
-  shift.business_date = bDay;
-  shift.end_time = endTime;
-  shift.end_cash = actualCash;
-  shift.expected_cash = st.expectedDrawer;
-  shift.total_notah_sales = st.notahSales;
-  shift.total_notah_collections = st.notahCollected;
-
-  await dbMutate(
-    'shifts',
-    'update',
-    {
-      status: 'closed',
-      business_date: bDay,
-      end_time: endTime,
-      end_cash: actualCash,
-      expected_cash: st.expectedDrawer,
-      total_notah_sales: st.notahSales,
-      total_notah_collections: st.notahCollected
-    },
-    'id',
-    shift.id
-  );
-
-  lastClosedShiftReportText = buildWhatsAppShiftReportText(shift, st, actualCash, diff);
-
-  document.getElementById('preCloseInputBox').classList.add('hidden');
-  document.getElementById('postCloseActionsBox').classList.remove('hidden');
-  renderAll();
-  showToast(`تم تقفيل الوردية وحفظ التقرير على ${formatBusinessDateAr(bDay)} ✅`, 'success');
-}
-
-function buildWhatsAppShiftReportText(shift, st, actualCash, diff) {
-  const bDay = getShiftBusinessDate(shift);
-  const diffLabel = diff === 0 ? 'مظبوط (0 ج)' : diff > 0 ? `زيادة (+${diff} ج)` : `عجز (${diff} ج)`;
-  const notahListLine =
-    st.notahClientsToday.length > 0 ? `\n   └ العملاء: ${st.notahClientsToday.join(' | ')}` : '';
-  const handoverLine =
-    st.handovers.length > 0
-      ? `\n🤝 *تسليمات الوردية:* ${st.handovers.map((h) => `${h.from_staff} ⬅️ ${h.to_staff} (${h.actual_cash} ج)`).join(' | ')}`
-      : '';
-
-  return [
-    `📊 *تقرير تقفيل الوردية - ARENA POS*`,
-    `━━━━━━━━━━━━━━━━━━`,
-    `📅 *يوم العمل:* ${formatBusinessDateAr(bDay)}`,
-    `👤 *الكاشير:* ${shift.staff_name}`,
-    `🕒 *من:* ${formatDateTime(shift.start_time)}`,
-    `🕒 *إلى:* ${formatDateTime(shift.end_time || new Date().toISOString())}${handoverLine}`,
-    `━━━━━━━━━━━━━━━━━━`,
-    `🎮 *إيراد الغرف:* ${st.roomsRev} ج.م`,
-    `☕ *إيراد الترابيزات والكافيه:* ${st.cafeRev} ج.م`,
-    `✅ *تحصيل نوتة سابقة:* ${st.notahCollected} ج.م`,
-    `📒 *مبيعات آجلة (نوتة اليوم):* ${st.notahSales} ج.م${notahListLine}`,
-    `━━━━━━━━━━━━━━━━━━`,
-    `💵 *بداية الدرج:* ${st.startCash} ج.م`,
-    `📱 *فودافون كاش:* ${st.vfCashIn} ج.م`,
-    `💸 *المصروفات:* ${st.expensesTotal} ج.م`,
-    `💰 *الكاش المفروض بالدرج:* ${st.expectedDrawer} ج.م`,
-    `🧮 *الكاش الفعلي المعدود:* ${actualCash} ج.م`,
-    `⚖️ *حالة الدرج:* ${diffLabel}`
+  const reportText = [
+    `📊 تقرير تقفيل وردية — ${state.settings.brandTitle || 'ARENA POS'}`,
+    `📅 يوم العمل: ${active.business_date} (${getArabicDayName(active.business_date)})`,
+    `👤 الكاشير: ${active.staff_name}`,
+    `━━━━━━━━━━━━━━`,
+    `💰 إجمالي المبيعات: ${fmtMoney(stats.totalSales)}`,
+    `🎮 إيراد وقت اللعب: ${fmtMoney(stats.roomsRev)}`,
+    `☕ إيراد الكافيه والطلبات: ${fmtMoney(stats.cafeRev)}`,
+    `📒 مبيعات آجلة (نوتة): ${fmtMoney(stats.notahSales)}`,
+    `📥 تحصيلات نوتة سابقة: ${fmtMoney(stats.notahCollected)}`,
+    `📱 فودافون كاش: ${fmtMoney(stats.vfCashTotal)}`,
+    `💸 المصروفات النثرية: ${fmtMoney(stats.expensesTotal)}`,
+    `━━━━━━━━━━━━━━`,
+    `💵 الكاش المفروض بالدرج: ${fmtMoney(stats.expectedDrawer)}`,
+    `✅ الكاش الفعلي بالدرج: ${fmtMoney(actualCash)}`,
+    `⚖️ العجز / الزيادة: ${fmtMoney(diff)}`
   ].join('\n');
+
+  $('preCloseInputBox').classList.add('hidden');
+  $('postCloseActionsBox').classList.remove('hidden');
+
+  $('btnSendWhatsappReport').onclick = () => openWhatsappWithText(reportText);
+  $('btnCopyShiftReport').onclick = () => {
+    navigator.clipboard.writeText(reportText);
+    showToast('تم نسخ تقرير الوردية 📋', 'success');
+  };
+
+  renderAll();
+  showToast('تم تقفيل الوردية وحفظ التقرير بنجاح 🔒', 'success');
 }
 
-function sendReportToWhatsApp(customText = null) {
+function openWhatsappWithText(text) {
   const phone = (state.settings.ownerWhatsapp || '').replace(/[^0-9]/g, '');
-  if (!phone) return showToast('لم يتم تسجيل رقم واتساب المدير في الإعدادات!', 'error');
-  const msg = customText || lastClosedShiftReportText;
-  window.open(`https://wa.me/${phone}?text=${encodeURIComponent(msg)}`, '_blank');
+  const url = phone
+    ? `https://wa.me/${phone}?text=${encodeURIComponent(text)}`
+    : `https://wa.me/?text=${encodeURIComponent(text)}`;
+  window.open(url, '_blank');
 }
 
-/* ================= 15. REPORTS (MANAGEMENT PROTECTED) ================= */
+/* ==========================================================================
+   MANAGEMENT DASHBOARD & REPORTS (UNIFIED CALCULATIONS)
+   ========================================================================== */
+function populateDashboardFilters() {
+  const daySel = $('dashFilterBusinessDay');
+  const wrongSel = $('dashWrongDaySelect');
+  const roomSel = $('dashFilterRoom');
+  const drinkSel = $('dashFilterDrink');
+  const cashierSel = $('dashFilterCashier');
 
-function populateReportFilters() {
-  const roomSel = document.getElementById('reportFilterRoom');
-  if (roomSel) {
-    const prev = roomSel.value || 'ALL';
-    roomSel.innerHTML =
-      `<option value="ALL">الكل</option>` +
-      `<option value="ROOMS_ONLY">الغرف فقط</option>` +
-      `<option value="CAFE_ONLY">الترابيزات والتيك أواي فقط</option>` +
-      state.rooms.map((r) => `<option value="room:${escapeAttr(r.name)}">🎮 ${escapeHtml(r.name)}</option>`).join('') +
-      state.tables.map((t) => `<option value="table:${escapeAttr(t.name)}">🪑 ${escapeHtml(t.name)}</option>`).join('');
-    if ([...roomSel.options].some((o) => o.value === prev)) roomSel.value = prev;
+  const allDays = [...new Set([
+    getCurrentBusinessDate(),
+    ...state.shifts.map((s) => s.business_date),
+    ...state.transactions.map((t) => t.business_date)
+  ])].filter(Boolean).sort().reverse();
+
+  if (daySel) {
+    daySel.innerHTML = [
+      '<option value="CURRENT">اليوم / الوردية الحالية</option>',
+      '<option value="ALL">كل الأيام المسجلة</option>',
+      ...allDays.map((d) => `<option value="${d}">${d} (${getArabicDayName(d)})</option>`)
+    ].join('');
   }
 
-  const itemSel = document.getElementById('reportFilterItem');
-  if (itemSel) {
-    const prev = itemSel.value || 'ALL';
-    itemSel.innerHTML =
-      `<option value="ALL">كل الأصناف</option>` +
-      state.menuItems.map((m) => `<option value="${escapeAttr(m.name)}">☕ ${escapeHtml(m.name)}</option>`).join('');
-    if ([...itemSel.options].some((o) => o.value === prev)) itemSel.value = prev;
+  if (wrongSel) {
+    wrongSel.innerHTML = allDays.map((d) => `<option value="${d}">${d} (${getArabicDayName(d)})</option>`).join('');
+  }
+
+  if (roomSel) {
+    roomSel.innerHTML = [
+      '<option value="ALL">كل الغرف والكافيه</option>',
+      '<option value="ROOMS_ONLY">كل الغرف فقط</option>',
+      '<option value="CAFE_ONLY">الترابيزات والتيك أواي فقط</option>',
+      ...state.rooms.map((r) => `<option value="${r.id}">${r.name}</option>`)
+    ].join('');
+  }
+
+  if (drinkSel) {
+    drinkSel.innerHTML = [
+      '<option value="ALL">كل المشاريب والأصناف</option>',
+      ...state.menu.map((m) => `<option value="${m.id}">${m.name}</option>`)
+    ].join('');
+  }
+
+  if (cashierSel) {
+    cashierSel.innerHTML = [
+      '<option value="ALL">كل الكاشيرية</option>',
+      ...state.users.map((u) => `<option value="${u.name}">${u.name}</option>`)
+    ].join('');
+  }
+}
+
+function renderDashboard() {
+  if (!mgmtUnlocked) return;
+
+  const dayFilter = $('dashFilterBusinessDay') ? $('dashFilterBusinessDay').value : 'CURRENT';
+  const dateFrom = $('dashFilterDateFrom') ? $('dashFilterDateFrom').value : '';
+  const dateTo = $('dashFilterDateTo') ? $('dashFilterDateTo').value : '';
+  const roomFilter = $('dashFilterRoom') ? $('dashFilterRoom').value : 'ALL';
+  const drinkFilter = $('dashFilterDrink') ? $('dashFilterDrink').value : 'ALL';
+  const cashierFilter = $('dashFilterCashier') ? $('dashFilterCashier').value : 'ALL';
+
+  const currentBDate = getCurrentBusinessDate();
+  const activeShift = getActiveShift();
+
+  const matchesDateAndCashier = (recordDate, staffName) => {
+    if (dateFrom && recordDate < dateFrom) return false;
+    if (dateTo && recordDate > dateTo) return false;
+    if (!dateFrom && !dateTo) {
+      if (dayFilter === 'CURRENT' && recordDate !== currentBDate) return false;
+      if (dayFilter !== 'CURRENT' && dayFilter !== 'ALL' && recordDate !== dayFilter) return false;
+    }
+    if (cashierFilter !== 'ALL' && staffName !== cashierFilter) return false;
+    return true;
+  };
+
+  const filteredTxs = state.transactions.filter((tx) => {
+    if (!matchesDateAndCashier(tx.business_date, tx.staff_name)) return false;
+    if (roomFilter === 'ROOMS_ONLY' && tx.type !== 'room') return false;
+    if (roomFilter === 'CAFE_ONLY' && tx.type === 'room') return false;
+    if (!['ALL', 'ROOMS_ONLY', 'CAFE_ONLY'].includes(roomFilter) && tx.unit_id !== roomFilter) return false;
+    if (drinkFilter !== 'ALL') {
+      const hasDrink = (tx.items || []).some((it) => it.id === drinkFilter);
+      if (!hasDrink) return false;
+    }
+    return true;
+  });
+
+  const filteredExps = state.expenses.filter((e) => matchesDateAndCashier(e.business_date, e.staff_name));
+  const filteredLedger = state.notahLedger.filter((l) => l.entry_type === 'payment' && matchesDateAndCashier(l.business_date, l.staff_name));
+
+  // Drawer cash reflects current active shift if viewing CURRENT, else startCash=0 for historical range
+  const startCash = (dayFilter === 'CURRENT' && !dateFrom && !dateTo && activeShift) ? (activeShift.start_cash || 0) : 0;
+  const stats = computeFinancialStats(filteredTxs, filteredExps, filteredLedger, startCash);
+  const marketNotah = state.clients.reduce((s, c) => s + (Number(c.notah_balance) || 0), 0);
+
+  $('dashTodayTotal').textContent = fmtMoney(stats.totalSales);
+  $('dashFilteredRoomsRev').textContent = fmtMoney(stats.roomsRev);
+  $('dashFilteredDrinksRev').textContent = fmtMoney(stats.cafeRev);
+  $('dashDrawerCash').textContent = fmtMoney(stats.expectedDrawer);
+  $('dashTodayNotah').textContent = fmtMoney(stats.notahSales);
+  $('dashTodayNotahCollected').textContent = fmtMoney(stats.notahCollected);
+  $('dashTodayVfCash').textContent = fmtMoney(stats.vfCashTotal);
+  if ($('dashTodayExpenses')) $('dashTodayExpenses').textContent = fmtMoney(stats.expensesTotal);
+  $('dashMarketNotah').textContent = fmtMoney(marketNotah);
+
+  // Live Units Grid
+  const activeRooms = state.rooms.filter((r) => r.status !== 'idle');
+  const activeTables = state.tables.filter((t) => t.status === 'open');
+  $('dashActiveRoomsCount').textContent = `${activeRooms.length}/${state.rooms.length}`;
+  $('dashActiveTablesCount').textContent = `${activeTables.length}/${state.tables.length}`;
+
+  $('dashLiveUnitsGrid').innerHTML = [
+    ...state.rooms.map((r) => {
+      const busy = r.status !== 'idle';
+      const m = busy ? getRoomLiveMetrics(r) : null;
+      return `
+        <div class="dash-unit-chip ${busy ? 'busy' : ''}" onclick="switchTab('rooms')">
+          <strong>🎮 ${r.name}</strong>
+          <div style="font-size:0.78rem;color:${busy ? 'var(--ps-cyan)' : 'var(--success)'};">
+            ${busy ? `${r.mode} — ${fmtMoney(m.grandTotal)}` : 'متاحة'}
+          </div>
+        </div>
+      `;
+    }),
+    ...state.tables.map((t) => {
+      const busy = t.status === 'open';
+      const tot = busy ? (t.orders || []).reduce((s, o) => s + o.price * o.qty, 0) : 0;
+      return `
+        <div class="dash-unit-chip ${busy ? 'table-busy' : ''}" onclick="switchTab('tables')">
+          <strong>🪑 ${t.name}</strong>
+          <div style="font-size:0.78rem;color:${busy ? 'var(--warning)' : 'var(--success)'};">
+            ${busy ? `مفتوحة — ${fmtMoney(tot)}` : 'متاحة'}
+          </div>
+        </div>
+      `;
+    })
+  ].join('');
+
+  // Analytics Breakdown Table
+  const breakdownMap = new Map();
+  filteredTxs.forEach((tx) => {
+    if (tx.type === 'room' && tx.room_time_cost > 0) {
+      const key = `room:${tx.unit_id}`;
+      const cur = breakdownMap.get(key) || { name: tx.title.split('(')[0].trim(), type: 'وقت لعب', count: 0, rev: 0 };
+      cur.count += 1;
+      cur.rev += Math.max(0, (Number(tx.room_time_cost) || 0) - (Number(tx.discount) || 0));
+      breakdownMap.set(key, cur);
+    }
+    (tx.items || []).forEach((it) => {
+      const key = `item:${it.name}`;
+      const cur = breakdownMap.get(key) || { name: it.name, type: 'كافيه / صنف', count: 0, rev: 0 };
+      cur.count += Number(it.qty) || 1;
+      cur.rev += (Number(it.price) || 0) * (Number(it.qty) || 1);
+      breakdownMap.set(key, cur);
+    });
+  });
+
+  const breakdownRows = [...breakdownMap.values()].sort((a, b) => b.rev - a.rev);
+  $('dashAnalyticsBreakdownBody').innerHTML = breakdownRows.map((row) => `
+    <tr>
+      <td><strong>${row.name}</strong></td>
+      <td>${row.type}</td>
+      <td>${row.count}</td>
+      <td><strong>${fmtMoney(row.rev)}</strong></td>
+    </tr>
+  `).join('') || '<tr><td colspan="4" style="text-align:center;color:var(--text-muted);">لا توجد بيانات مطابقة للفلتر</td></tr>';
+
+  // Top Items
+  const topDrinks = breakdownRows.filter((r) => r.type === 'كافيه / صنف').slice(0, 5);
+  $('dashTopItemsList').innerHTML = topDrinks.map((d) => `
+    <div class="mini-list-item">
+      <span>☕ ${d.name} (${d.count})</span>
+      <strong>${fmtMoney(d.rev)}</strong>
+    </div>
+  `).join('') || '<p class="hint-text">لا توجد مبيعات أصناف بعد</p>';
+
+  // Upcoming Reservations
+  const upcomingRes = state.reservations.filter((r) => r.status === 'Upcoming').slice(0, 4);
+  $('dashUpcomingResList').innerHTML = upcomingRes.map((r) => `
+    <div class="mini-list-item">
+      <span>📅 ${r.client_name} (${r.game})</span>
+      <strong>${formatDateTimeAr(r.datetime)}</strong>
+    </div>
+  `).join('') || '<p class="hint-text">لا توجد حجوزات قادمة</p>';
+
+  // Filtered Transactions + Expenses Table
+  const combinedDashRows = [
+    ...filteredTxs.map((tx) => ({
+      ts: new Date(tx.created_at).getTime() || 0,
+      dateCol: `${tx.business_date} (${formatTimeShort(tx.created_at)})`,
+      titleCol: `🧾 ${tx.title}${tx.discount > 0 ? ` <small style="color:var(--warning)">(خصم ${fmtMoney(tx.discount)})</small>` : ''}`,
+      amountCol: `<strong style="color:var(--success)">${fmtMoney(tx.total)}</strong>`,
+      payCol: [
+        tx.cash_paid > 0 ? `كاش: ${fmtMoney(tx.cash_paid)}` : '',
+        tx.vfcash_paid > 0 ? `فودافون: ${fmtMoney(tx.vfcash_paid)}` : '',
+        tx.notah_paid > 0 ? `نوتة: ${fmtMoney(tx.notah_paid)}` : ''
+      ].filter(Boolean).join(' | '),
+      staffCol: tx.staff_name || '-'
+    })),
+    ...filteredExps.map((ex) => ({
+      ts: new Date(ex.created_at).getTime() || 0,
+      dateCol: `${ex.business_date} (${formatTimeShort(ex.created_at)})`,
+      titleCol: `💸 مصروف: ${ex.title}`,
+      amountCol: `<strong style="color:var(--danger)">- ${fmtMoney(ex.amount)}</strong>`,
+      payCol: 'خصم من الدرج',
+      staffCol: ex.staff_name || '-'
+    }))
+  ].sort((a, b) => b.ts - a.ts);
+
+  $('dashRecentTxBody').innerHTML = combinedDashRows.map((r) => `
+    <tr>
+      <td>${r.dateCol}</td>
+      <td>${r.titleCol}</td>
+      <td>${r.amountCol}</td>
+      <td>${r.payCol}</td>
+      <td>${r.staffCol}</td>
+    </tr>
+  `).join('') || '<tr><td colspan="5" style="text-align:center;color:var(--text-muted);">لا توجد عمليات</td></tr>';
+}
+
+function fixWrongBusinessDay() {
+  const wrongDay = $('dashWrongDaySelect').value;
+  const correctDay = $('dashCorrectDayInput').value;
+  const keepTimers = $('dashKeepActiveTimers').checked;
+
+  if (!wrongDay || !correctDay) {
+    showToast('اختر اليوم الغلط واليوم الصح!', 'warning');
+    return;
+  }
+  if (wrongDay === correctDay) {
+    showToast('اليوم الصح هو نفس اليوم المختار!', 'warning');
+    return;
+  }
+  if (!confirm(`هل أنت متأكد من إلغاء يوم (${wrongDay}) بالكامل واستبداله بيوم (${correctDay})؟`)) return;
+
+  // Delete transactions, expenses, shifts of wrongDay
+  const txsToDel = state.transactions.filter((t) => t.business_date === wrongDay);
+  txsToDel.forEach((t) => queueCloudSync('arena_transactions', 'delete', { id: t.id }));
+  state.transactions = state.transactions.filter((t) => t.business_date !== wrongDay);
+
+  const expsToDel = state.expenses.filter((e) => e.business_date === wrongDay);
+  expsToDel.forEach((e) => queueCloudSync('arena_expenses', 'delete', { id: e.id }));
+  state.expenses = state.expenses.filter((e) => e.business_date !== wrongDay);
+
+  const activeShift = getActiveShift();
+  if (activeShift && activeShift.business_date === wrongDay) {
+    activeShift.business_date = correctDay;
+    queueCloudSync('arena_shifts', 'upsert', activeShift);
+  } else {
+    const shiftsToDel = state.shifts.filter((s) => s.business_date === wrongDay);
+    shiftsToDel.forEach((s) => queueCloudSync('arena_shifts', 'delete', { id: s.id }));
+    state.shifts = state.shifts.filter((s) => s.business_date !== wrongDay);
+  }
+
+  if (!keepTimers) {
+    state.rooms.forEach((r) => {
+      if (r.status !== 'idle') {
+        resetRoomObject(r);
+        queueCloudSync('arena_rooms', 'upsert', r);
+      }
+    });
+  }
+
+  saveLocalDB();
+  populateDashboardFilters();
+  renderAll();
+  showToast(`تم إلغاء يوم ${wrongDay} وتصحيحه إلى ${correctDay} ✅`, 'success');
+}
+
+/* Reports Tab */
+function populateReportFilters() {
+  const today = getCurrentBusinessDate();
+  if ($('reportDateFrom') && !$('reportDateFrom').value) $('reportDateFrom').value = today;
+  if ($('reportDateTo') && !$('reportDateTo').value) $('reportDateTo').value = today;
+
+  if ($('reportFilterRoom')) {
+    $('reportFilterRoom').innerHTML = [
+      '<option value="ALL">الكل</option>',
+      ...state.rooms.map((r) => `<option value="${r.id}">${r.name}</option>`)
+    ].join('');
+  }
+  if ($('reportFilterItem')) {
+    $('reportFilterItem').innerHTML = [
+      '<option value="ALL">كل الأصناف</option>',
+      ...state.menu.map((m) => `<option value="${m.id}">${m.name}</option>`)
+    ].join('');
   }
 }
 
 function renderReports() {
-  if (!isMgmtUnlocked) return;
-  populateReportFilters();
-
-  const fromStr = document.getElementById('reportDateFrom')?.value || '';
-  const toStr = document.getElementById('reportDateTo')?.value || '';
-  const roomFilter = document.getElementById('reportFilterRoom')?.value || 'ALL';
-  const itemFilter = document.getElementById('reportFilterItem')?.value || 'ALL';
+  if (!mgmtUnlocked) return;
+  const from = $('reportDateFrom').value;
+  const to = $('reportDateTo').value;
+  const roomF = $('reportFilterRoom').value;
+  const itemF = $('reportFilterItem').value;
 
   const txs = state.transactions.filter((t) => {
-    const bDay = getTxBusinessDate(t);
-    if (fromStr && bDay < fromStr) return false;
-    if (toStr && bDay > toStr) return false;
-
-    if (roomFilter === 'ROOMS_ONLY' && t.type !== 'room') return false;
-    if (roomFilter === 'CAFE_ONLY' && t.type !== 'cafe' && t.type !== 'table') return false;
-    if (roomFilter.startsWith('room:') && (t.type !== 'room' || !(t.description || '').startsWith(roomFilter.slice(5)))) return false;
-    if (roomFilter.startsWith('table:') && (t.type !== 'table' || !(t.description || '').startsWith(roomFilter.slice(6)))) return false;
-
-    if (itemFilter !== 'ALL') {
-      const items = extractTxItems(t);
-      if (!items.some((it) => it.name === itemFilter)) return false;
-    }
-
+    if (from && t.business_date < from) return false;
+    if (to && t.business_date > to) return false;
+    if (roomF !== 'ALL' && t.unit_id !== roomF) return false;
+    if (itemF !== 'ALL' && !(t.items || []).some((i) => i.id === itemF)) return false;
     return true;
   });
 
   const exps = state.expenses.filter((e) => {
-    const bDay = getExpBusinessDate(e);
-    if (fromStr && bDay < fromStr) return false;
-    if (toStr && bDay > toStr) return false;
+    if (from && e.business_date < from) return false;
+    if (to && e.business_date > to) return false;
     return true;
   });
 
-  let roomsRev = 0;
-  let cafeRev = 0;
-  let notahSales = 0;
-  let notahCollected = 0;
-
-  txs.forEach((t) => {
-    const amt = Number(t.amount || 0);
-    if (t.type === 'room') roomsRev += amt;
-    else if (t.type === 'cafe' || t.type === 'table') cafeRev += amt;
-    else if (t.type === 'notah_collection') notahCollected += amt;
-    notahSales += Number(t.notah_amount || 0);
+  const ledger = state.notahLedger.filter((l) => {
+    if (l.entry_type !== 'payment') return false;
+    if (from && l.business_date < from) return false;
+    if (to && l.business_date > to) return false;
+    return true;
   });
 
-  const expTotal = exps.reduce((s, e) => s + Number(e.amount || 0), 0);
+  const stats = computeFinancialStats(txs, exps, ledger, 0);
+  $('repTotalRevenue').textContent = fmtMoney(stats.totalSales);
+  $('repRoomsRev').textContent = fmtMoney(stats.roomsRev);
+  $('repCafeRev').textContent = fmtMoney(stats.cafeRev);
+  $('repNotahSales').textContent = fmtMoney(stats.notahSales);
+  $('repNotahCollected').textContent = fmtMoney(stats.notahCollected);
+  $('repExpenses').textContent = fmtMoney(stats.expensesTotal);
 
-  document.getElementById('repTotalRevenue').textContent = `${roomsRev + cafeRev} ج.م`;
-  document.getElementById('repRoomsRev').textContent = `${roomsRev} ج.م`;
-  document.getElementById('repCafeRev').textContent = `${cafeRev} ج.م`;
-  document.getElementById('repNotahSales').textContent = `${notahSales} ج.م`;
-  document.getElementById('repNotahCollected').textContent = `${notahCollected} ج.م`;
-  document.getElementById('repExpenses').textContent = `${expTotal} ج.م`;
-
-  const tbody = document.getElementById('reportsTransactionsBody');
-  tbody.innerHTML =
-    txs.length === 0
-      ? `<tr><td colspan="5" style="text-align:center;color:var(--text-muted)">لا توجد عمليات في هذه الفترة</td></tr>`
-      : txs
-          .map(
-            (t) => `
-          <tr>
-            <td><span style="color:var(--ps-cyan);font-weight:700">${getTxBusinessDate(t)}</span> • ${formatTimeShort(t.created_at)}</td>
-            <td><strong>${escapeHtml(t.description)}</strong></td>
-            <td><strong>${t.amount} ج.م</strong></td>
-            <td>${escapeHtml(t.payment_summary || '')}</td>
-            <td>${escapeHtml(t.staff_name || '-')}</td>
-          </tr>
-        `
-          )
-          .join('');
+  $('reportsTransactionsBody').innerHTML = txs.map((tx) => `
+    <tr>
+      <td>${tx.business_date} (${formatTimeShort(tx.created_at)})</td>
+      <td>${tx.title}${tx.discount > 0 ? ` <small style="color:var(--warning)">(خصم ${fmtMoney(tx.discount)})</small>` : ''}</td>
+      <td><strong>${fmtMoney(tx.total)}</strong></td>
+      <td>${[
+        tx.cash_paid > 0 ? `كاش: ${fmtMoney(tx.cash_paid)}` : '',
+        tx.vfcash_paid > 0 ? `فودافون: ${fmtMoney(tx.vfcash_paid)}` : '',
+        tx.notah_paid > 0 ? `نوتة: ${fmtMoney(tx.notah_paid)}` : ''
+      ].filter(Boolean).join(' | ')}</td>
+      <td>${tx.staff_name || '-'}</td>
+    </tr>
+  `).join('') || '<tr><td colspan="5" style="text-align:center;color:var(--text-muted);">لا توجد سجلات في هذه الفترة</td></tr>';
 }
 
-/* ================= 16. SETTINGS: RECEIPT DESIGNER, USERS, MENU & INVENTORY ================= */
-
+/* ==========================================================================
+   SETTINGS TAB (RECEIPT DESIGNER, USERS, MENU/INVENTORY, ROOMS, TABLES, GAMES)
+   ========================================================================== */
 function renderSettings() {
-  if (!isMgmtUnlocked) return;
+  if (!mgmtUnlocked) return;
+  const s = state.settings;
 
-  document.getElementById('setReceiptPaperSize').value = state.settings.receiptPaperSize || '80mm';
-  document.getElementById('setReceiptFontSize').value = state.settings.receiptFontSize || 'normal';
-  document.getElementById('setReceiptHeader').value = state.settings.receiptHeader || '';
-  document.getElementById('setReceiptFooter').value = state.settings.receiptFooter || '';
-  document.getElementById('setOwnerWhatsapp').value = state.settings.ownerWhatsapp || '';
-  updateReceiptPreview();
+  $('setReceiptPaperSize').value = s.receiptPaperSize || '80mm';
+  $('setReceiptFontSize').value = s.receiptFontSize || 'normal';
+  $('setReceiptHeader').value = s.receiptHeader || '';
+  $('setReceiptFooter').value = s.receiptFooter || '';
+  $('setOwnerWhatsapp').value = s.ownerWhatsapp || '';
+  renderReceiptLivePreview();
 
-  const canManage = hasAdminPrivilege();
-
-  document.getElementById('settingsUsersList').innerHTML = state.users
-    .map((u) => {
-      const isAdm = isUserAdmin(u);
-      return `
-        <div class="mini-list-item">
-          <span>
-            <strong>${escapeHtml(u.name)}</strong> (${isAdm ? 'مدير Admin الرئيسي' : 'موظف / كاشير'}) — الباسورد: <code>${escapeHtml(u.pin)}</code>
-          </span>
-          ${
-            canManage
-              ? `<div class="btn-row">
-                  <button type="button" class="btn btn-outline btn-xs" onclick="editUserForm('${u.id}')">✏️ تعديل / تغيير باسورد</button>
-                  ${!isAdm ? `<button type="button" class="btn btn-danger btn-xs" onclick="deleteUser('${u.id}')">🗑️ حذف</button>` : ''}
-                </div>`
-              : `<span style="font-size:0.75rem;color:var(--text-muted)">عرض فقط</span>`
-          }
-        </div>
-      `;
-    })
-    .join('');
-
-  document.getElementById('settingsRoomsList').innerHTML = state.rooms
-    .map(
-      (r) => `
-      <div class="mini-list-item">
-        <span><strong>${escapeHtml(r.name)}</strong> (${r.type}) — Single: ${r.single_rate} ج | Multi: ${r.multi_rate} ج</span>
-        <div class="btn-row">
-          <button type="button" class="btn btn-outline btn-xs" onclick="editRoomForm('${r.id}')">✏️ تعديل</button>
-          <button type="button" class="btn btn-danger btn-xs" onclick="deleteRoom('${r.id}')">حذف</button>
-        </div>
+  // Users list
+  $('settingsUsersList').innerHTML = state.users.map((u) => `
+    <div class="mini-list-item">
+      <span>👤 <strong>${u.name}</strong> (${u.role === 'admin' ? 'مدير' : 'كاشير'}) — PIN: <code dir="ltr">${u.pin}</code></span>
+      <div class="btn-row">
+        <button type="button" class="btn btn-outline btn-xs" onclick="editUser('${u.id}')">تعديل</button>
+        ${u.id !== 'usr-admin' ? `<button type="button" class="btn btn-danger btn-xs" onclick="deleteUser('${u.id}')">حذف</button>` : ''}
       </div>
-    `
-    )
-    .join('');
+    </div>
+  `).join('');
 
-  document.getElementById('settingsTablesList').innerHTML = state.tables
-    .map(
-      (t) => `
-      <div class="mini-list-item">
-        <span>🪑 <strong>${escapeHtml(t.name)}</strong></span>
-        <button type="button" class="btn btn-danger btn-xs" onclick="deleteTable('${t.id}')">حذف</button>
+  // Menu & Stock list
+  const menuSearch = ($('settingsMenuSearch').value || '').trim().toLowerCase();
+  const filteredMenu = state.menu.filter((m) => !menuSearch || m.name.toLowerCase().includes(menuSearch));
+  $('settingsMenuList').innerHTML = filteredMenu.map((m) => `
+    <div class="mini-list-item">
+      <div>
+        <strong>${m.name}</strong> <small style="color:var(--ps-cyan)">[${m.category}]</small>
+        <div style="font-size:0.78rem;color:var(--text-muted);">بيع: ${fmtMoney(m.price)} | تكلفة: ${fmtMoney(m.cost || 0)} | مخزون: <strong>${m.stock}</strong> ${m.unit || 'قطعة'}</div>
       </div>
-    `
-    )
-    .join('');
-
-  document.getElementById('settingsGamesList').innerHTML = state.games
-    .map(
-      (g) => `
-      <span class="tag-chip">
-        ${escapeHtml(g.name)}
-        <button type="button" style="background:none;border:none;color:var(--danger);cursor:pointer;font-weight:900" onclick="deleteGame('${g.id}')">×</button>
-      </span>
-    `
-    )
-    .join('');
-
-  renderSettingsMenuList();
-
-  const settingsContainer = document.getElementById('settingsUnlockedContent');
-  if (settingsContainer) {
-    let settingsResetCard = document.getElementById('settingsResetSystemCard');
-    if (!canManage) {
-      if (settingsResetCard) settingsResetCard.remove();
-    } else if (!settingsResetCard) {
-      settingsResetCard = document.createElement('div');
-      settingsResetCard.id = 'settingsResetSystemCard';
-      settingsResetCard.className = 'card';
-      settingsResetCard.style.marginTop = '16px';
-      settingsResetCard.style.border = '1px solid rgba(239, 68, 68, 0.5)';
-      settingsResetCard.style.background = 'rgba(239, 68, 68, 0.06)';
-      settingsResetCard.innerHTML = `
-        <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px;">
-          <div>
-            <h3 style="margin:0 0 4px 0;color:#f87171;">⚠️ تصفير السيستم بالكامل (Reset System)</h3>
-            <p class="hint-text" style="margin:0;">صلاحية Admin فقط: مسح بيانات التجربة وتجهيز السيستم للعمل الفعلي.</p>
-          </div>
-          <button type="button" class="btn btn-danger" onclick="openResetSystemModal()">🗑️ تصفير السيستم الآن</button>
+      <div class="btn-row">
+        <div class="stock-quick-controls">
+          <button type="button" class="tile-qty-btn minus" onclick="quickStockAdjust('${m.id}', -1)">-</button>
+          <span style="font-size:0.8rem;font-weight:800;">${m.stock}</span>
+          <button type="button" class="tile-qty-btn plus" onclick="quickStockAdjust('${m.id}', 1)">+</button>
         </div>
-      `;
-      settingsContainer.appendChild(settingsResetCard);
-    }
-  }
+        <button type="button" class="btn btn-outline btn-xs" onclick="editMenuItem('${m.id}')">تعديل</button>
+        <button type="button" class="btn btn-danger btn-xs" onclick="deleteMenuItem('${m.id}')">حذف</button>
+      </div>
+    </div>
+  `).join('');
+
+  // Rooms list
+  $('settingsRoomsList').innerHTML = state.rooms.map((r) => `
+    <div class="mini-list-item">
+      <span>🎮 <strong>${r.name}</strong> (${r.device || 'PS5'}) — Single: ${r.singleRate}ج | Multi: ${r.multiRate}ج</span>
+      <div class="btn-row">
+        <button type="button" class="btn btn-outline btn-xs" onclick="editRoom('${r.id}')">تعديل</button>
+        <button type="button" class="btn btn-danger btn-xs" onclick="deleteRoom('${r.id}')">حذف</button>
+      </div>
+    </div>
+  `).join('');
+
+  // Tables list
+  $('settingsTablesList').innerHTML = state.tables.map((t) => `
+    <div class="mini-list-item">
+      <span>🪑 <strong>${t.name}</strong></span>
+      <button type="button" class="btn btn-danger btn-xs" onclick="deleteTable('${t.id}')">حذف</button>
+    </div>
+  `).join('');
+
+  // Games list (Clean rows with explicit Delete button)
+  const games = state.settings.games || DEFAULT_GAMES;
+  $('settingsGamesList').innerHTML = games.map((g, idx) => `
+    <div class="mini-list-item">
+      <span>🕹️ <strong>${g}</strong></span>
+      <button type="button" class="btn btn-danger btn-xs" onclick="deleteGame(${idx})">حذف</button>
+    </div>
+  `).join('') || '<p class="hint-text">لا توجد ألعاب مضافة</p>';
 }
 
-function renderSettingsMenuList() {
-  const listEl = document.getElementById('settingsMenuList');
-  if (!listEl) return;
+function renderReceiptLivePreview() {
+  const preview = $('receiptLivePreview');
+  const tag = $('previewPaperSizeTag');
+  if (!preview) return;
+  const size = $('setReceiptPaperSize').value || '80mm';
+  const font = $('setReceiptFontSize').value || 'normal';
+  if (tag) tag.textContent = size;
 
-  const q = (document.getElementById('settingsMenuSearch')?.value || '').trim().toLowerCase();
-  const filtered = state.menuItems.filter(
-    (m) =>
-      !q ||
-      (m.name || '').toLowerCase().includes(q) ||
-      (m.category || '').toLowerCase().includes(q)
-  );
+  preview.className = `receipt-paper receipt-${size} ${font === 'large' ? 'receipt-font-large' : font === 'compact' ? 'receipt-font-compact' : ''}`;
+  const sampleTx = {
+    id: 'tx-10245',
+    business_date: getTodayDateStr(),
+    created_at: new Date().toISOString(),
+    type: 'room',
+    title: 'Room 1 (FC 26)',
+    room_time_cost: 60,
+    single_ms: 1800000,
+    single_cost: 25,
+    multi_ms: 1800000,
+    multi_cost: 35,
+    total_duration_ms: 3600000,
+    items: [{ name: 'بيبسي كانز', qty: 2, price: 20 }],
+    subtotal: 100,
+    discount: 10,
+    total: 90,
+    cash_paid: 90,
+    vfcash_paid: 0,
+    notah_paid: 0,
+    staff_name: 'كاشير 1'
+  };
 
-  if (filtered.length === 0) {
-    listEl.innerHTML = `<p class="hint-text">لا توجد أصناف مطابقة</p>`;
+  const tempSettings = {
+    ...state.settings,
+    receiptPaperSize: size,
+    receiptFontSize: font,
+    receiptHeader: $('setReceiptHeader').value,
+    receiptFooter: $('setReceiptFooter').value
+  };
+  const orig = state.settings;
+  state.settings = tempSettings;
+  preview.innerHTML = buildReceiptHtml(sampleTx);
+  state.settings = orig;
+}
+
+function quickStockAdjust(id, delta) {
+  adjustMenuStock(id, delta);
+  renderSettings();
+  renderDirectCafePOS();
+}
+
+function editMenuItem(id) {
+  const m = state.menu.find((x) => x.id === id);
+  if (!m) return;
+  $('setEditMenuId').value = m.id;
+  $('setMenuName').value = m.name;
+  $('setMenuCategory').value = m.category;
+  $('setMenuPrice').value = m.price;
+  $('setMenuCost').value = m.cost || 0;
+  $('setMenuStock').value = m.stock || 0;
+  $('setMenuMinStock').value = m.minStock || 5;
+  $('setMenuUnit').value = m.unit || 'قطعة';
+  $('setMenuIcon').value = m.icon || 'auto';
+  $('btnAddMenuItem').textContent = '💾 حفظ تعديل الصنف';
+  $('btnCancelEditMenu').classList.remove('hidden');
+}
+
+function resetMenuForm() {
+  $('setEditMenuId').value = '';
+  $('setMenuName').value = '';
+  $('setMenuPrice').value = '';
+  $('setMenuCost').value = '';
+  $('setMenuStock').value = '';
+  $('btnAddMenuItem').textContent = '➕ إضافة صنف للمنيو والمخزون';
+  $('btnCancelEditMenu').classList.add('hidden');
+}
+
+function saveMenuItem() {
+  const name = $('setMenuName').value.trim();
+  const price = Number($('setMenuPrice').value);
+  if (!name || isNaN(price) || price < 0) {
+    showToast('أدخل اسم الصنف وسعر البيع!', 'warning');
     return;
   }
 
-  listEl.innerHTML = filtered
-    .map((m) => {
-      const hasStock = m.stock !== null && m.stock !== undefined;
-      const stockNum = hasStock ? Number(m.stock) : 0;
-      const minStock = Number(m.min_stock ?? 5);
-      const isLow = hasStock && stockNum <= minStock;
-      const costNum = Number(m.cost || 0);
-      const profit = Number(m.price || 0) - costNum;
-
-      return `
-        <div class="mini-list-item">
-          <div>
-            <strong>${escapeHtml(m.name)}</strong> <span style="color:var(--ps-cyan)">[${escapeHtml(m.category)}]</span>
-            <div style="font-size:0.78rem;color:var(--text-muted);margin-top:2px;">
-              سعر البيع: <strong style="color:var(--success)">${m.price} ج</strong>
-              ${costNum > 0 ? ` | التكلفة: <strong>${costNum} ج</strong> | الربح: <strong style="color:var(--ps-cyan)">${profit} ج</strong>` : ''}
-            </div>
-          </div>
-          <div class="btn-row" style="align-items:center;">
-            <div class="stock-quick-controls" title="تعديل رصيد المخزون سريعاً">
-              <span style="font-size:0.78rem;color:${isLow ? 'var(--danger)' : 'var(--text-muted)'};font-weight:700;">
-                مخزون: ${hasStock ? `${stockNum} ${escapeHtml(m.unit || 'قطعة')}` : 'غير محدد'}
-              </span>
-              <button type="button" class="tile-qty-btn minus" style="width:20px;height:20px;font-size:0.85rem" onclick="adjustMenuStock('${m.id}', -1)">-</button>
-              <button type="button" class="tile-qty-btn plus" style="width:20px;height:20px;font-size:0.85rem" onclick="adjustMenuStock('${m.id}', 1)">+</button>
-            </div>
-            <button type="button" class="btn btn-outline btn-xs" onclick="editMenuItemForm('${m.id}')">✏️ تعديل</button>
-            <button type="button" class="btn btn-danger btn-xs" onclick="deleteMenuItem('${m.id}')">حذف</button>
-          </div>
-        </div>
-      `;
-    })
-    .join('');
-}
-
-window.adjustMenuStock = async (id, delta) => {
-  const item = state.menuItems.find((m) => String(m.id) === String(id));
-  if (!item) return;
-  const current = item.stock !== null && item.stock !== undefined ? Number(item.stock) : 0;
-  item.stock = Math.max(0, current + delta);
-  state.menuMeta[String(item.id)] = {
-    ...(state.menuMeta[String(item.id)] || {}),
-    cost: Number(item.cost || 0),
-    stock: item.stock,
-    min_stock: Number(item.min_stock ?? 5),
-    unit: item.unit || 'قطعة'
+  const editId = $('setEditMenuId').value;
+  const payload = {
+    id: editId || uid('m'),
+    name,
+    category: $('setMenuCategory').value,
+    price,
+    cost: Number($('setMenuCost').value) || 0,
+    stock: Number($('setMenuStock').value) || 0,
+    minStock: Number($('setMenuMinStock').value) || 5,
+    unit: $('setMenuUnit').value.trim() || 'قطعة',
+    icon: $('setMenuIcon').value || 'auto'
   };
-  await dbMutate('menu_items', 'update', { stock: item.stock }, 'id', item.id);
-  await saveSystemStateKey('arena_menu_meta', state.menuMeta);
-  renderSettingsMenuList();
-  renderDirectCafePos();
-};
 
-window.editMenuItemForm = (id) => {
-  const item = state.menuItems.find((m) => String(m.id) === String(id));
-  if (!item) return;
-  document.getElementById('setEditMenuId').value = item.id;
-  document.getElementById('setMenuName').value = item.name || '';
-  document.getElementById('setMenuCategory').value = item.category || 'قهوة';
-  document.getElementById('setMenuPrice').value = item.price ?? '';
-  document.getElementById('setMenuCost').value = item.cost ?? '';
-  document.getElementById('setMenuStock').value = item.stock !== null && item.stock !== undefined ? item.stock : '';
-  document.getElementById('setMenuMinStock').value = item.min_stock ?? 5;
-  document.getElementById('setMenuUnit').value = item.unit || 'قطعة';
-  document.getElementById('setMenuIcon').value = item.icon || 'auto';
+  if (editId) {
+    const idx = state.menu.findIndex((m) => m.id === editId);
+    if (idx !== -1) state.menu[idx] = payload;
+  } else {
+    state.menu.push(payload);
+  }
 
-  document.getElementById('btnAddMenuItem').textContent = '💾 حفظ تعديل الصنف والمخزون';
-  document.getElementById('btnCancelEditMenu').classList.remove('hidden');
-  document.getElementById('setMenuName').focus();
-};
-
-function resetMenuForm() {
-  document.getElementById('setEditMenuId').value = '';
-  document.getElementById('setMenuName').value = '';
-  document.getElementById('setMenuPrice').value = '';
-  document.getElementById('setMenuCost').value = '';
-  document.getElementById('setMenuStock').value = '';
-  document.getElementById('setMenuMinStock').value = 5;
-  document.getElementById('setMenuUnit').value = 'قطعة';
-  document.getElementById('setMenuIcon').value = 'auto';
-  document.getElementById('btnAddMenuItem').textContent = '➕ إضافة صنف للمنيو والمخزون';
-  document.getElementById('btnCancelEditMenu').classList.add('hidden');
+  queueCloudSync('arena_menu', 'upsert', payload);
+  resetMenuForm();
+  renderSettings();
+  renderDirectCafePOS();
+  showToast('تم حفظ الصنف في المنيو والمخزون ✅', 'success');
 }
 
-window.editUserForm = (id) => {
-  const u = state.users.find((x) => String(x.id) === String(id));
+function deleteMenuItem(id) {
+  if (!confirm('حذف هذا الصنف من المنيو؟')) return;
+  state.menu = state.menu.filter((m) => m.id !== id);
+  queueCloudSync('arena_menu', 'delete', { id });
+  renderSettings();
+  renderDirectCafePOS();
+  showToast('تم حذف الصنف', 'info');
+}
+
+function editUser(id) {
+  const u = state.users.find((x) => x.id === id);
   if (!u) return;
-  document.getElementById('setEditUserId').value = u.id;
-  document.getElementById('setUserName').value = u.name || '';
-  document.getElementById('setUserPin').value = u.pin || '';
-  const roleSel = document.getElementById('setUserRole');
-  if (roleSel) {
-    roleSel.value = isUserAdmin(u) ? 'admin' : 'staff';
-    roleSel.disabled = isUserAdmin(u);
-  }
-  document.getElementById('btnAddUser').textContent = '💾 حفظ تعديل الحساب';
-  document.getElementById('btnCancelEditUser').classList.remove('hidden');
-  document.getElementById('setUserName').focus();
-};
+  $('setEditUserId').value = u.id;
+  $('setUserName').value = u.name;
+  $('setUserPin').value = u.pin;
+  $('setUserRole').value = u.role;
+  $('btnAddUser').textContent = '💾 حفظ التعديل';
+  $('btnCancelEditUser').classList.remove('hidden');
+}
 
 function resetUserForm() {
-  document.getElementById('setEditUserId').value = '';
-  document.getElementById('setUserName').value = '';
-  document.getElementById('setUserPin').value = '';
-  const roleSel = document.getElementById('setUserRole');
-  if (roleSel) {
-    roleSel.value = 'staff';
-    roleSel.disabled = false;
-  }
-  document.getElementById('btnAddUser').textContent = '➕ إضافة موظف جديد';
-  document.getElementById('btnCancelEditUser').classList.add('hidden');
+  $('setEditUserId').value = '';
+  $('setUserName').value = '';
+  $('setUserPin').value = '';
+  $('btnAddUser').textContent = '➕ إضافة يوزر جديد';
+  $('btnCancelEditUser').classList.add('hidden');
 }
 
-window.editRoomForm = (id) => {
-  const r = state.rooms.find((x) => String(x.id) === String(id));
+function saveUser() {
+  const name = $('setUserName').value.trim();
+  const pin = $('setUserPin').value.trim();
+  const role = $('setUserRole').value;
+  if (!name || !pin) {
+    showToast('أدخل اسم اليوزر والباسورد!', 'warning');
+    return;
+  }
+  const editId = $('setEditUserId').value;
+  const userObj = { id: editId || uid('usr'), name, pin, role };
+  if (editId) {
+    const idx = state.users.findIndex((u) => u.id === editId);
+    if (idx !== -1) state.users[idx] = userObj;
+  } else {
+    state.users.push(userObj);
+  }
+  queueCloudSync('arena_users', 'upsert', userObj);
+  resetUserForm();
+  populateLoginUsers();
+  renderSettings();
+  showToast('تم حفظ بيانات اليوزر ✅', 'success');
+}
+
+function deleteUser(id) {
+  if (!confirm('حذف هذا اليوزر؟')) return;
+  state.users = state.users.filter((u) => u.id !== id);
+  queueCloudSync('arena_users', 'delete', { id });
+  populateLoginUsers();
+  renderSettings();
+  showToast('تم حذف اليوزر', 'info');
+}
+
+function editRoom(id) {
+  const r = state.rooms.find((x) => x.id === id);
   if (!r) return;
-  document.getElementById('setEditRoomId').value = r.id;
-  document.getElementById('setRoomName').value = r.name || '';
-  document.getElementById('setRoomType').value = r.type || 'PS5';
-  document.getElementById('setRoomSingleRate').value = r.single_rate ?? 50;
-  document.getElementById('setRoomMultiRate').value = r.multi_rate ?? 70;
-  document.getElementById('btnAddRoom').textContent = '💾 حفظ تعديل الغرفة';
-  document.getElementById('btnCancelEditRoom').classList.remove('hidden');
-  document.getElementById('setRoomName').focus();
-};
+  $('setEditRoomId').value = r.id;
+  $('setRoomName').value = r.name;
+  $('setRoomType').value = r.device || 'PS5';
+  $('setRoomSingleRate').value = r.singleRate;
+  $('setRoomMultiRate').value = r.multiRate;
+  $('btnAddRoom').textContent = '💾 حفظ تعديل الغرفة';
+  $('btnCancelEditRoom').classList.remove('hidden');
+}
 
 function resetRoomForm() {
-  document.getElementById('setEditRoomId').value = '';
-  document.getElementById('setRoomName').value = '';
-  document.getElementById('setRoomSingleRate').value = '';
-  document.getElementById('setRoomMultiRate').value = '';
-  document.getElementById('btnAddRoom').textContent = '➕ إضافة / حفظ غرفة';
-  document.getElementById('btnCancelEditRoom').classList.add('hidden');
+  $('setEditRoomId').value = '';
+  $('setRoomName').value = '';
+  $('setRoomSingleRate').value = '';
+  $('setRoomMultiRate').value = '';
+  $('btnAddRoom').textContent = '➕ إضافة / حفظ غرفة';
+  $('btnCancelEditRoom').classList.add('hidden');
 }
 
-function handleLogoUpload(event) {
-  const file = event.target.files?.[0];
-  if (!file) return;
-
-  const reader = new FileReader();
-  reader.onload = (e) => {
-    const img = new Image();
-    img.onload = () => {
-      const canvas = document.createElement('canvas');
-      const maxW = 240;
-      const scale = Math.min(1, maxW / img.width);
-      canvas.width = img.width * scale;
-      canvas.height = img.height * scale;
-      const ctx = canvas.getContext('2d');
-      ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-      state.settings.receiptLogo = canvas.toDataURL('image/png', 0.85);
-      updateReceiptPreview();
-      showToast('تم تحميل اللوجو — اضغط "حفظ تصميم الفاتورة" لتثبيته', 'info');
-    };
-    img.src = e.target.result;
-  };
-  reader.readAsDataURL(file);
-}
-
-function applyReceiptPaperClasses(el) {
-  if (!el) return;
-  const paperSize = document.getElementById('setReceiptPaperSize')?.value || state.settings.receiptPaperSize || '80mm';
-  const fontSize = document.getElementById('setReceiptFontSize')?.value || state.settings.receiptFontSize || 'normal';
-
-  el.classList.remove('receipt-80mm', 'receipt-58mm', 'receipt-font-normal', 'receipt-font-large', 'receipt-font-compact');
-  el.classList.add(paperSize === '58mm' ? 'receipt-58mm' : 'receipt-80mm');
-  el.classList.add(`receipt-font-${fontSize}`);
-}
-
-function buildReceiptHtml(sampleTx = null, sampleLines = null) {
-  const logoHtml = state.settings.receiptLogo
-    ? `<img src="${state.settings.receiptLogo}" class="receipt-logo-img" alt="Logo" />`
-    : '';
-
-  const headerText = escapeHtml(
-    document.getElementById('setReceiptHeader')?.value ?? state.settings.receiptHeader ?? ''
-  );
-  const footerText = escapeHtml(
-    document.getElementById('setReceiptFooter')?.value ?? state.settings.receiptFooter ?? ''
-  );
-
-  const lines = sampleLines || [
-    { label: 'Room 1 (FC 26 - Multi) [01:00:00]', amount: 70 },
-    { label: 'بيبسي × 2', amount: 40 }
-  ];
-  const total = sampleTx ? sampleTx.amount : 110;
-  const dateStr = formatDateTime(sampleTx ? sampleTx.created_at : new Date().toISOString());
-  const bDayStr = sampleTx ? getTxBusinessDate(sampleTx) : getShiftBusinessDate(getOpenShift());
-  const payStr = sampleTx ? sampleTx.payment_summary : 'كاش: 110 ج';
-  const cashierStr = sampleTx ? sampleTx.staff_name : (activeUser?.name || 'كاشير');
-
-  return `
-    ${logoHtml}
-    <div class="receipt-header-text">${headerText}</div>
-    <div class="receipt-divider"></div>
-    <div style="font-size:10px;">يوم العمل: ${bDayStr} | ${dateStr}</div>
-    <div style="font-size:10px;">الكاشير: ${escapeHtml(cashierStr)}</div>
-    <div class="receipt-divider"></div>
-    ${lines
-      .map((l) => `<div class="receipt-row"><span>${escapeHtml(l.label)}</span><strong>${l.amount} ج</strong></div>`)
-      .join('')}
-    <div class="receipt-divider"></div>
-    <div class="receipt-row" style="font-size:14px;"><strong>الإجمالي:</strong><strong>${total} ج.م</strong></div>
-    <div style="font-size:10px;text-align:right;margin-top:4px;">الدفع: ${escapeHtml(payStr)}</div>
-    <div class="receipt-divider"></div>
-    <div class="receipt-footer-text">${footerText}</div>
-  `;
-}
-
-function updateReceiptPreview() {
-  const box = document.getElementById('receiptLivePreview');
-  const sizeTag = document.getElementById('previewPaperSizeTag');
-  const paperSize = document.getElementById('setReceiptPaperSize')?.value || state.settings.receiptPaperSize || '80mm';
-  if (sizeTag) sizeTag.textContent = paperSize;
-  if (box) {
-    applyReceiptPaperClasses(box);
-    box.innerHTML = buildReceiptHtml();
+function saveRoom() {
+  const name = $('setRoomName').value.trim();
+  const singleRate = Number($('setRoomSingleRate').value) || 50;
+  const multiRate = Number($('setRoomMultiRate').value) || 70;
+  const device = $('setRoomType').value;
+  if (!name) {
+    showToast('أدخل اسم الغرفة!', 'warning');
+    return;
   }
+
+  const editId = $('setEditRoomId').value;
+  if (editId) {
+    const r = state.rooms.find((x) => x.id === editId);
+    if (r) {
+      r.name = name;
+      r.device = device;
+      r.singleRate = singleRate;
+      r.multiRate = multiRate;
+      queueCloudSync('arena_rooms', 'upsert', r);
+    }
+  } else {
+    const newR = normalizeRoom({
+      id: uid('room'),
+      name,
+      device,
+      singleRate,
+      multiRate,
+      status: 'idle',
+      mode: 'Single',
+      game: state.settings.games[0] || 'FC 26',
+      timeType: 'open',
+      fixedMinutes: 60,
+      startTime: null
+    });
+    state.rooms.push(newR);
+    queueCloudSync('arena_rooms', 'upsert', newR);
+  }
+
+  resetRoomForm();
+  renderSettings();
+  renderRoomsTab();
+  showToast('تم حفظ بيانات الغرفة ✅', 'success');
 }
 
-function printReceipt(tx, lines) {
-  const printBox = document.getElementById('receiptPrintContent');
-  if (!printBox) return;
-  applyReceiptPaperClasses(printBox);
-  printBox.innerHTML = buildReceiptHtml(tx, lines);
-  setTimeout(() => window.print(), 150);
+function deleteRoom(id) {
+  const r = state.rooms.find((x) => x.id === id);
+  if (r && r.status !== 'idle') {
+    showToast('لا يمكن حذف غرفة شغالة حالياً!', 'error');
+    return;
+  }
+  if (!confirm('حذف هذه الغرفة؟')) return;
+  state.rooms = state.rooms.filter((x) => x.id !== id);
+  queueCloudSync('arena_rooms', 'delete', { id });
+  renderSettings();
+  renderRoomsTab();
+  showToast('تم حذف الغرفة', 'info');
 }
 
-/* ================= 17. RENDER ALL & EVENT BINDINGS ================= */
+function addTable() {
+  const name = $('setTableName').value.trim();
+  if (!name) {
+    showToast('أدخل اسم الترابيزة!', 'warning');
+    return;
+  }
+  const tbl = { id: uid('tbl'), name, status: 'idle', clientName: '', openedAt: null, orders: [] };
+  state.tables.push(tbl);
+  queueCloudSync('arena_tables', 'upsert', tbl);
+  $('setTableName').value = '';
+  renderSettings();
+  renderTablesTab();
+  showToast('تمت إضافة الترابيزة ✅', 'success');
+}
 
+function deleteTable(id) {
+  const t = state.tables.find((x) => x.id === id);
+  if (t && t.status === 'open') {
+    showToast('لا يمكن حذف ترابيزة مفتوحة حالياً!', 'error');
+    return;
+  }
+  if (!confirm('حذف هذه الترابيزة؟')) return;
+  state.tables = state.tables.filter((x) => x.id !== id);
+  queueCloudSync('arena_tables', 'delete', { id });
+  renderSettings();
+  renderTablesTab();
+  showToast('تم حذف الترابيزة', 'info');
+}
+
+function addGame() {
+  const name = $('setGameName').value.trim();
+  if (!name) {
+    showToast('أدخل اسم اللعبة!', 'warning');
+    return;
+  }
+  if (!Array.isArray(state.settings.games)) state.settings.games = [...DEFAULT_GAMES];
+  if (state.settings.games.includes(name)) {
+    showToast('اللعبة موجودة بالفعل في القائمة!', 'warning');
+    return;
+  }
+  state.settings.games.push(name);
+  saveSettingsToCloud();
+  $('setGameName').value = '';
+  renderSettings();
+  renderReservationsTab();
+  showToast(`تمت إضافة لعبة (${name}) ✅`, 'success');
+}
+
+function deleteGame(index) {
+  if (!Array.isArray(state.settings.games)) return;
+  const gameName = state.settings.games[index];
+  if (!confirm(`هل تريد حذف لعبة "${gameName}" من القائمة؟`)) return;
+  state.settings.games.splice(index, 1);
+  saveSettingsToCloud();
+  renderSettings();
+  renderReservationsTab();
+  showToast(`تم حذف لعبة (${gameName})`, 'info');
+}
+
+function saveSettingsToCloud() {
+  queueCloudSync('arena_settings', 'upsert', { id: 'main', data: state.settings });
+}
+
+/* ==========================================================================
+   MASTER RENDER & EVENT BINDINGS
+   ========================================================================== */
 function renderAll() {
-  renderRooms();
-  renderTables();
-  renderDirectCafePos();
+  renderRoomsTab();
+  renderTablesTab();
+  renderDirectCafePOS();
   renderReservationsTab();
   renderClientsTab();
   renderShiftTab();
-  if (isMgmtUnlocked) {
+  if (mgmtUnlocked) {
     renderDashboard();
     renderReports();
     renderSettings();
   }
 }
 
-function openModal(id) {
-  const el = document.getElementById(id);
-  if (el) el.classList.remove('hidden');
-}
-
-function closeModal(id) {
-  const el = document.getElementById(id);
-  if (el) el.classList.add('hidden');
-}
-
-function showToast(message, type = 'info') {
-  const container = document.getElementById('toastContainer');
-  if (!container) return;
-  const t = document.createElement('div');
-  t.className = `toast ${type}`;
-  t.textContent = message;
-  container.appendChild(t);
-  setTimeout(() => t.remove(), 3400);
-}
-
-function escapeHtml(str) {
-  return String(str ?? '')
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;');
-}
-
-function escapeAttr(str) {
-  return String(str ?? '').replace(/'/g, "\\'").replace(/"/g, '&quot;');
-}
-
-function escapeRegExp(str) {
-  return String(str ?? '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-}
-
-function formatTimeShort(ms) {
-  return new Date(ms).toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit' });
-}
-
-function formatDateTime(iso) {
-  try {
-    return new Date(iso).toLocaleString('ar-EG', {
-      month: 'short',
-      day: 'numeric',
-      hour: '2-digit',
-      minute: '2-digit'
-    });
-  } catch (_) {
-    return iso || '-';
-  }
-}
-
 function bindEvents() {
-  document.getElementById('btnSaveSetup')?.addEventListener('click', async () => {
-    const u = document.getElementById('setupUrl').value.trim();
-    const k = document.getElementById('setupKey').value.trim();
-    if (!u || !k) return showToast('أدخل بيانات الربط كاملة', 'error');
-    localStorage.setItem(STORAGE_KEYS.URL, u);
-    localStorage.setItem(STORAGE_KEYS.KEY, k);
-    initSupabase(u, k);
-    await syncAllDataFromCloud();
-    populateLoginUserSelect();
-    showScreen('loginScreen');
-  });
-
-  document.querySelectorAll('.pin-key[data-key]').forEach((btn) => {
-    btn.addEventListener('click', () => {
-      const k = btn.dataset.key;
-      const inp = document.getElementById('loginPin');
-      if (k === 'C') inp.value = '';
-      else if (inp.value.length < 20) inp.value += k;
-    });
-  });
-  document.getElementById('btnLogin')?.addEventListener('click', handleLogin);
-  document.getElementById('loginPin')?.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter') handleLogin();
-  });
-
-  document.getElementById('btnLogout')?.addEventListener('click', () => {
-    activeUser = null;
-    isMgmtUnlocked = false;
-    sessionStorage.removeItem(STORAGE_KEYS.USER);
-    populateLoginUserSelect();
-    showScreen('loginScreen');
-  });
-
-  document.getElementById('syncQueueBtn')?.addEventListener('click', flushOfflineQueue);
-
-  document.querySelectorAll('.nav-tab').forEach((btn) => {
-    btn.addEventListener('click', () => switchTab(btn.dataset.tab));
-  });
-
-  // Management Password Unlock / Lock
-  document.getElementById('btnUnlockMgmt')?.addEventListener('click', verifyMgmtPassword);
-  document.getElementById('mgmtPasswordInput')?.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter') verifyMgmtPassword();
-  });
-  document.getElementById('btnLockMgmt')?.addEventListener('click', lockMgmtPanel);
-
-  document.addEventListener('click', (e) => {
-    const gateBtn = e.target.closest(
-      '#dashboardLockedGate button, #reportsLockedGate button, #settingsLockedGate button, #mgmtLockIndicator'
-    );
-    if (gateBtn) {
-      if (gateBtn.id === 'mgmtLockIndicator' && isMgmtUnlocked) {
-        lockMgmtPanel();
-        return;
-      }
-      const activeTab = document.querySelector('.nav-tab.active')?.dataset.tab || 'dashboard';
-      openMgmtAuthModal(activeTab);
+  // Setup Screen
+  $('btnSaveSetup').addEventListener('click', async () => {
+    const url = $('setupUrl').value.trim();
+    const key = $('setupKey').value.trim();
+    if (!url || !key) {
+      showToast('أدخل رابط Supabase والمفتاح!', 'warning');
       return;
     }
-
-    const modalConfirmBtn = e.target.closest('#modalMgmtAuth .btn-primary, #modalMgmtAuth .btn-success');
-    if (modalConfirmBtn && modalConfirmBtn.id !== 'btnUnlockMgmt') {
-      verifyMgmtPassword();
+    localStorage.setItem(STORAGE_KEYS.URL, url);
+    localStorage.setItem(STORAGE_KEYS.KEY, key);
+    if (window.supabase) {
+      supabaseClient = window.supabase.createClient(url, key);
+      await pullFromSupabase();
     }
+    $('setupScreen').classList.add('hidden');
+    populateLoginUsers();
+    $('loginScreen').classList.remove('hidden');
   });
 
-  // Dashboard Sales Analytics Filters
-  document.getElementById('btnApplyDashFilter')?.addEventListener('click', renderDashboard);
-  document.getElementById('dashFilterBusinessDay')?.addEventListener('change', renderDashboard);
-  document.getElementById('dashFilterRoom')?.addEventListener('change', renderDashboard);
-  document.getElementById('dashFilterDrink')?.addEventListener('change', renderDashboard);
-  document.getElementById('dashFilterCashier')?.addEventListener('change', renderDashboard);
-  document.getElementById('btnResetDashFilter')?.addEventListener('click', () => {
-    document.getElementById('dashFilterBusinessDay').value = 'CURRENT';
-    document.getElementById('dashFilterDateFrom').value = '';
-    document.getElementById('dashFilterDateTo').value = '';
-    document.getElementById('dashFilterRoom').value = 'ALL';
-    document.getElementById('dashFilterDrink').value = 'ALL';
-    document.getElementById('dashFilterCashier').value = 'ALL';
-    renderDashboard();
-  });
-
-  // Dashboard Fix Wrong Business Day
-  document.getElementById('btnFixWrongBusinessDay')?.addEventListener('click', handleFixWrongBusinessDay);
-
-  // Start Room & Table Modals
-  document.getElementById('startModeSingle')?.addEventListener('click', () => {
-    selectedStartMode = 'Single';
-    updateStartRoomModalUI();
-  });
-  document.getElementById('startModeMulti')?.addEventListener('click', () => {
-    selectedStartMode = 'Multi';
-    updateStartRoomModalUI();
-  });
-  document.getElementById('startTimeTypeOpen')?.addEventListener('click', () => {
-    selectedStartTimeType = 'open';
-    updateStartRoomModalUI();
-  });
-  document.getElementById('startTimeTypeFixed')?.addEventListener('click', () => {
-    selectedStartTimeType = 'fixed';
-    updateStartRoomModalUI();
-  });
-  document.querySelectorAll('.preset-min-btn').forEach((btn) => {
+  // Login Screen & PIN Pad
+  document.querySelectorAll('.pin-key').forEach((btn) => {
     btn.addEventListener('click', () => {
-      document.getElementById('startFixedMinutes').value = btn.dataset.mins;
+      const k = btn.dataset.key;
+      if (!k) return;
+      if (k === 'C') $('loginPin').value = '';
+      else $('loginPin').value += k;
     });
   });
-  document.getElementById('btnConfirmStartRoom')?.addEventListener('click', confirmStartRoom);
-  document.getElementById('btnConfirmStartTable')?.addEventListener('click', confirmStartTable);
+  $('btnLogin').addEventListener('click', handleLogin);
+  $('loginPin').addEventListener('keydown', (e) => { if (e.key === 'Enter') handleLogin(); });
+  $('btnLogout').addEventListener('click', handleLogout);
+  $('syncQueueBtn').addEventListener('click', flushSyncQueue);
 
-  // Switch Mode Modal
-  document.getElementById('btnConfirmSwitchMode')?.addEventListener('click', confirmSwitchMode);
-
-  // POS Search & Actions
-  document.getElementById('posSearchInput')?.addEventListener('input', () => renderPosInterface('room'));
-  document.getElementById('cafeSearchInput')?.addEventListener('input', () => renderPosInterface('direct'));
-  document.getElementById('btnConfirmRoomOrders')?.addEventListener('click', confirmPosModalOrders);
-  document.getElementById('btnClearDirectCart')?.addEventListener('click', () => {
-    directCart = {};
-    renderDirectCafePos();
-  });
-  document.getElementById('btnDirectCheckout')?.addEventListener('click', openDirectCafeCheckout);
-
-  // Checkout Modal Split Inputs & Single Print Button
-  document.getElementById('checkoutDiscount')?.addEventListener('input', () => recalculateCheckoutSplit('discount'));
-  document.getElementById('payCash')?.addEventListener('input', () => recalculateCheckoutSplit('cash'));
-  document.getElementById('payVfCash')?.addEventListener('input', () => recalculateCheckoutSplit('vfcash'));
-  document.getElementById('payNotah')?.addEventListener('input', () => recalculateCheckoutSplit('notah'));
-
-  document.getElementById('btnToggleQuickClient')?.addEventListener('click', () => {
-    document.getElementById('quickClientForm').classList.toggle('hidden');
-  });
-  document.getElementById('btnSaveQuickClient')?.addEventListener('click', handleQuickCreateClient);
-  document.getElementById('btnConfirmCheckoutPrint')?.addEventListener('click', finalizeCheckoutAndPrint);
-
-  // Clients & Notah Collection
-  document.getElementById('btnAddClient')?.addEventListener('click', handleAddClient);
-  document.getElementById('clientSearchInput')?.addEventListener('input', renderClientsTab);
-  document.getElementById('btnCollectFullNotah')?.addEventListener('click', () => {
-    const clientId = document.getElementById('detailClientId').value;
-    const client = state.clients.find((c) => String(c.id) === String(clientId));
-    if (client) document.getElementById('collectNotahAmount').value = Number(client.notah_balance || 0);
-  });
-  document.getElementById('btnConfirmNotahCollect')?.addEventListener('click', handleCollectNotahPayment);
-
-  // Reservations
-  document.getElementById('btnAddReservation')?.addEventListener('click', handleAddReservation);
-  document.getElementById('resFilterStatus')?.addEventListener('change', renderReservationsTab);
-
-  // Shift, Business Day Picker, Handover & Close
-  document.getElementById('btnShowOpenShift')?.addEventListener('click', openOpenShiftModal);
-  document.getElementById('openShiftBusinessDate')?.addEventListener('change', (e) => {
-    const hintEl = document.getElementById('openShiftDayNameHint');
-    if (hintEl && e.target.value) {
-      hintEl.textContent = `سيتم تسجيل وتقفيل الوردية بالكامل على: ${formatBusinessDateAr(e.target.value)}`;
-    }
-  });
-  document.getElementById('btnConfirmOpenShift')?.addEventListener('click', confirmOpenShift);
-  document.getElementById('btnAddExpense')?.addEventListener('click', handleAddExpense);
-
-  document.getElementById('btnShowHandoverShift')?.addEventListener('click', openHandoverShiftModal);
-  document.getElementById('handoverActualCash')?.addEventListener('input', updateHandoverDiff);
-  document.getElementById('btnConfirmHandoverShift')?.addEventListener('click', confirmHandoverShift);
-  document.getElementById('btnSendHandoverWhatsapp')?.addEventListener('click', () => sendReportToWhatsApp(lastHandoverReportText));
-
-  document.getElementById('btnShowCloseShift')?.addEventListener('click', openCloseShiftModal);
-  document.getElementById('closeShiftActualCash')?.addEventListener('input', updateCloseShiftDiff);
-  document.getElementById('btnConfirmCloseShift')?.addEventListener('click', confirmCloseShift);
-  document.getElementById('btnSendWhatsappReport')?.addEventListener('click', () => sendReportToWhatsApp());
-  document.getElementById('btnCopyShiftReport')?.addEventListener('click', () => {
-    navigator.clipboard?.writeText(lastClosedShiftReportText);
-    showToast('تم نسخ نص التقرير ✅', 'success');
-  });
-
-  // Reports Filter
-  document.getElementById('btnFilterReports')?.addEventListener('click', renderReports);
-
-  // Settings: Receipt Designer (80mm / 58mm)
-  document.getElementById('setReceiptLogoInput')?.addEventListener('change', handleLogoUpload);
-  document.getElementById('btnRemoveReceiptLogo')?.addEventListener('click', () => {
-    state.settings.receiptLogo = '';
-    updateReceiptPreview();
-  });
-  document.getElementById('setReceiptPaperSize')?.addEventListener('change', updateReceiptPreview);
-  document.getElementById('setReceiptFontSize')?.addEventListener('change', updateReceiptPreview);
-  document.getElementById('setReceiptHeader')?.addEventListener('input', updateReceiptPreview);
-  document.getElementById('setReceiptFooter')?.addEventListener('input', updateReceiptPreview);
-  document.getElementById('btnSaveReceiptSettings')?.addEventListener('click', async () => {
-    state.settings.receiptPaperSize = document.getElementById('setReceiptPaperSize').value;
-    state.settings.receiptFontSize = document.getElementById('setReceiptFontSize').value;
-    state.settings.receiptHeader = document.getElementById('setReceiptHeader').value;
-    state.settings.receiptFooter = document.getElementById('setReceiptFooter').value;
-    await saveSystemStateKey('arena_settings', state.settings);
-    updateReceiptPreview();
-    showToast('تم حفظ تصميم الفاتورة بمقاس الريسيت وتطبيقه على كل الأجهزة ✅', 'success');
-  });
-
-  // Settings: Admin Password Change (Synced across Login + Mgmt Lock + Cloud)
-  document.getElementById('btnSaveMgmtPass')?.addEventListener('click', async () => {
-    if (!hasAdminPrivilege()) {
-      return showToast('تغيير باسورد الإدارة متاح لحساب Admin فقط!', 'error');
-    }
-    const p1 = document.getElementById('setMgmtNewPass').value.trim();
-    const p2 = document.getElementById('setMgmtConfirmPass').value.trim();
-    if (!p1) return showToast('أدخل باسورد Admin الجديد', 'warning');
-    if (p1 !== p2) return showToast('الباسورد غير متطابق!', 'error');
-
-    const ok = await updateAdminPasswordEverywhere(p1);
-    if (!ok) return;
-
-    document.getElementById('setMgmtNewPass').value = '';
-    document.getElementById('setMgmtConfirmPass').value = '';
-    renderAll();
-    showToast('تم تغيير باسورد حساب Admin وقفل الإدارة بنجاح 🔐', 'success');
-  });
-
-  // Settings: WhatsApp
-  document.getElementById('btnSaveWhatsapp')?.addEventListener('click', async () => {
-    state.settings.ownerWhatsapp = document.getElementById('setOwnerWhatsapp').value.trim();
-    await saveSystemStateKey('arena_settings', state.settings);
-    showToast('تم حفظ رقم واتساب المدير ✅', 'success');
-  });
-  document.getElementById('btnTestWhatsapp')?.addEventListener('click', () => {
-    state.settings.ownerWhatsapp = document.getElementById('setOwnerWhatsapp').value.trim();
-    sendReportToWhatsApp('✅ رسالة تجريبية من سيستم ARENA POS - الربط مع واتساب المدير يعمل بنجاح!');
-  });
-
-  // Settings: Users (Create Staff + Edit Any Account)
-  document.getElementById('btnAddUser')?.addEventListener('click', async () => {
-    if (!hasAdminPrivilege()) {
-      return showToast('إدارة الحسابات متاحة لحساب Admin فقط!', 'error');
-    }
-    const editId = document.getElementById('setEditUserId').value;
-    const name = document.getElementById('setUserName').value.trim();
-    const pin = document.getElementById('setUserPin').value.trim();
-    if (!name || !pin) return showToast('أدخل الاسم والباسورد / PIN', 'warning');
-
-    if (editId) {
-      const target = state.users.find((u) => String(u.id) === String(editId));
-      if (!target) return;
-
-      if (isUserAdmin(target)) {
-        const ok = await updateAdminPasswordEverywhere(pin, name);
-        if (!ok) return;
-        resetUserForm();
-        renderAll();
-        showToast('تم تحديث حساب وباسورد Admin بنجاح 🔐', 'success');
+  // Navigation Tabs
+  document.querySelectorAll('.nav-tab').forEach((tab) => {
+    tab.addEventListener('click', () => {
+      const target = tab.dataset.tab;
+      if (tab.classList.contains('mgmt-protected') && !mgmtUnlocked) {
+        openMgmtAuthModal(target);
         return;
       }
-
-      const duplicate = state.users.find((u) => String(u.pin) === pin && String(u.id) !== String(editId));
-      if (duplicate) {
-        return showToast(`هذا الباسورد مستخدم بالفعل لحساب "${duplicate.name}"`, 'error');
-      }
-      target.name = name;
-      target.pin = pin;
-      target.role = 'staff';
-      await persistUsersEverywhere();
-      await dbMutate('users', 'update', { name, pin, role: 'staff' }, 'id', target.id);
-      resetUserForm();
-    } else {
-      const duplicate = state.users.find((u) => String(u.pin) === pin);
-      if (duplicate) {
-        return showToast(`هذا الباسورد مستخدم بالفعل لحساب "${duplicate.name}"`, 'error');
-      }
-      const u = { id: 'usr-' + Date.now(), name, pin, role: 'staff' };
-      state.users.push(u);
-      await persistUsersEverywhere();
-      await dbMutate('users', 'insert', u);
-      resetUserForm();
-    }
-
-    populateLoginUserSelect();
-    renderAll();
-    showToast('تم حفظ بيانات الحساب والباسورد ✅', 'success');
-  });
-  document.getElementById('btnCancelEditUser')?.addEventListener('click', resetUserForm);
-
-  // Settings: Rooms (Add & Edit)
-  document.getElementById('btnAddRoom')?.addEventListener('click', async () => {
-    const editId = document.getElementById('setEditRoomId').value;
-    const name = document.getElementById('setRoomName').value.trim();
-    const type = document.getElementById('setRoomType').value;
-    const single_rate = Number(document.getElementById('setRoomSingleRate').value || 50);
-    const multi_rate = Number(document.getElementById('setRoomMultiRate').value || 70);
-    if (!name) return showToast('أدخل اسم الغرفة', 'warning');
-
-    if (editId) {
-      const room = state.rooms.find((r) => String(r.id) === String(editId));
-      if (room) {
-        room.name = name;
-        room.type = type;
-        room.single_rate = single_rate;
-        room.multi_rate = multi_rate;
-        await dbMutate('rooms', 'update', { name, type, single_rate, multi_rate }, 'id', room.id);
-      }
-      resetRoomForm();
-    } else {
-      const room = {
-        id: String(Date.now()),
-        name,
-        type,
-        single_rate,
-        multi_rate,
-        status: 'idle',
-        session: null
-      };
-      state.rooms.push(room);
-      await dbMutate('rooms', 'insert', room);
-      resetRoomForm();
-    }
-    renderAll();
-    showToast('تم حفظ الغرفة بنجاح ✅', 'success');
-  });
-  document.getElementById('btnCancelEditRoom')?.addEventListener('click', resetRoomForm);
-
-  // Settings: Tables
-  document.getElementById('btnAddTable')?.addEventListener('click', async () => {
-    const name = document.getElementById('setTableName').value.trim();
-    if (!name) return showToast('أدخل اسم أو رقم الترابيزة', 'warning');
-
-    state.tables.push({
-      id: 'tbl-' + Date.now(),
-      name,
-      status: 'idle',
-      session: null
+      switchTab(target);
     });
-    await saveSystemStateKey('arena_tables', state.tables);
-    document.getElementById('setTableName').value = '';
-    renderAll();
-    showToast('تمت إضافة الترابيزة ✅', 'success');
   });
 
-  // Settings: Games
-  document.getElementById('btnAddGame')?.addEventListener('click', async () => {
-    const name = document.getElementById('setGameName').value.trim();
-    if (!name) return;
-    const g = { id: 'gm-' + Date.now(), name };
-    state.games.push(g);
-    await dbMutate('games', 'insert', g);
-    document.getElementById('setGameName').value = '';
-    renderSettings();
-    renderReservationsTab();
-    showToast('تمت إضافة اللعبة ✅', 'success');
+  // Management Password Modal
+  $('btnUnlockMgmt').addEventListener('click', verifyMgmtPassword);
+  $('mgmtPasswordInput').addEventListener('keydown', (e) => { if (e.key === 'Enter') verifyMgmtPassword(); });
+  $('btnLockMgmt').addEventListener('click', lockManagement);
+
+  // Start Room Modal
+  $('startRoomSelect').addEventListener('change', (e) => syncStartRoomModalRates(e.target.value));
+  document.querySelectorAll('#modalStartRoom .mode-btn').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('#modalStartRoom .mode-btn').forEach((b) => b.classList.remove('active'));
+      btn.classList.add('active');
+    });
+  });
+  document.querySelectorAll('#modalStartRoom .time-btn').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('#modalStartRoom .time-btn').forEach((b) => b.classList.remove('active'));
+      btn.classList.add('active');
+      $('startFixedMinutesBox').classList.toggle('hidden', btn.dataset.type !== 'fixed');
+    });
+  });
+  document.querySelectorAll('.preset-min-btn').forEach((btn) => {
+    btn.addEventListener('click', () => { $('startFixedMinutes').value = btn.dataset.mins; });
+  });
+  $('btnConfirmStartRoom').addEventListener('click', confirmStartRoom);
+
+  // Start Table & Switch Mode
+  $('btnConfirmStartTable').addEventListener('click', confirmStartTable);
+  $('btnConfirmSwitchMode').addEventListener('click', confirmSwitchMode);
+
+  // POS & Direct Cafe
+  $('cafeSearchInput').addEventListener('input', renderDirectCafePOS);
+  $('btnClearDirectCart').addEventListener('click', () => {
+    state.directCart = [];
+    renderDirectCafePOS();
+  });
+  $('btnDirectCheckout').addEventListener('click', openDirectCheckoutModal);
+  $('posSearchInput').addEventListener('input', renderModalPosGrid);
+  $('btnConfirmRoomOrders').addEventListener('click', confirmModalPosOrders);
+
+  // Checkout & Multi-Client Notah Split
+  $('checkoutDiscount').addEventListener('input', () => recalculateCheckoutSplit('discount'));
+  $('payCash').addEventListener('input', () => recalculateCheckoutSplit('cash'));
+  $('payVfCash').addEventListener('input', () => recalculateCheckoutSplit('vfcash'));
+  $('payNotah').addEventListener('input', () => recalculateCheckoutSplit('notah'));
+  $('btnAddNotahSplitRow').addEventListener('click', addNotahSplitRow);
+  $('btnToggleQuickClient').addEventListener('click', () => $('quickClientForm').classList.toggle('hidden'));
+  $('btnSaveQuickClient').addEventListener('click', saveQuickClientFromCheckout);
+  $('btnConfirmCheckoutPrint').addEventListener('click', finalizeCheckoutAndPrint);
+
+  // Reservations & Clients
+  $('btnAddReservation').addEventListener('click', addReservation);
+  $('resFilterStatus').addEventListener('change', renderReservationsTab);
+  $('btnAddClient').addEventListener('click', addNewClient);
+  $('clientSearchInput').addEventListener('input', renderClientsTab);
+  $('btnCollectFullNotah').addEventListener('click', () => {
+    const client = state.clients.find((c) => c.id === $('detailClientId').value);
+    if (client) $('collectNotahAmount').value = String(client.notah_balance || 0);
+  });
+  $('btnConfirmNotahCollect').addEventListener('click', confirmNotahCollection);
+
+  // Shift, Handover & Close
+  $('btnShowOpenShift').addEventListener('click', openOpenShiftModal);
+  $('openShiftBusinessDate').addEventListener('change', (e) => {
+    $('openShiftDayNameHint').textContent = `يوم: ${getArabicDayName(e.target.value)}`;
+  });
+  $('btnConfirmOpenShift').addEventListener('click', confirmOpenShift);
+  $('btnAddExpense').addEventListener('click', addShiftExpense);
+  $('btnShowHandoverShift').addEventListener('click', openHandoverModal);
+  $('handoverActualCash').addEventListener('input', () => {
+    const active = getActiveShift();
+    if (!active) return;
+    const expected = getShiftStats(active).expectedDrawer;
+    const diff = (Number($('handoverActualCash').value) || 0) - expected;
+    const badge = $('handoverDiffBadge');
+    badge.className = `balance-status ${Math.abs(diff) <= 0.01 ? 'valid' : 'invalid'}`;
+    badge.textContent = Math.abs(diff) <= 0.01 ? 'الكاش المُسلَّم مطابق للدرج ✅' : `فرق الدرج: ${fmtMoney(diff)}`;
+  });
+  $('btnConfirmHandoverShift').addEventListener('click', confirmHandoverShift);
+  $('btnShowCloseShift').addEventListener('click', openCloseShiftModal);
+  $('closeShiftActualCash').addEventListener('input', () => {
+    const active = getActiveShift();
+    if (!active) return;
+    const expected = getShiftStats(active).expectedDrawer;
+    const diff = (Number($('closeShiftActualCash').value) || 0) - expected;
+    const badge = $('closeShiftDiffBadge');
+    badge.className = `balance-status ${Math.abs(diff) <= 0.01 ? 'valid' : 'invalid'}`;
+    badge.textContent = Math.abs(diff) <= 0.01 ? 'المبلغ مطابق للدرج ✅' : `العجز / الزيادة: ${fmtMoney(diff)}`;
+  });
+  $('btnConfirmCloseShift').addEventListener('click', confirmCloseShift);
+
+  // Dashboard & Reports Filters
+  $('btnApplyDashFilter').addEventListener('click', renderDashboard);
+  $('btnResetDashFilter').addEventListener('click', () => {
+    $('dashFilterBusinessDay').value = 'CURRENT';
+    $('dashFilterDateFrom').value = '';
+    $('dashFilterDateTo').value = '';
+    $('dashFilterRoom').value = 'ALL';
+    $('dashFilterDrink').value = 'ALL';
+    $('dashFilterCashier').value = 'ALL';
+    renderDashboard();
+  });
+  $('btnFixWrongBusinessDay').addEventListener('click', fixWrongBusinessDay);
+  $('btnFilterReports').addEventListener('click', renderReports);
+
+  // Settings: Receipt Designer
+  $('setReceiptPaperSize').addEventListener('change', renderReceiptLivePreview);
+  $('setReceiptFontSize').addEventListener('change', renderReceiptLivePreview);
+  $('setReceiptHeader').addEventListener('input', renderReceiptLivePreview);
+  $('setReceiptFooter').addEventListener('input', renderReceiptLivePreview);
+  $('setReceiptLogoInput').addEventListener('change', (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      state.settings.receiptLogo = reader.result;
+      renderReceiptLivePreview();
+    };
+    reader.readAsDataURL(file);
+  });
+  $('btnRemoveReceiptLogo').addEventListener('click', () => {
+    state.settings.receiptLogo = '';
+    $('setReceiptLogoInput').value = '';
+    renderReceiptLivePreview();
+  });
+  $('btnSaveReceiptSettings').addEventListener('click', () => {
+    state.settings.receiptPaperSize = $('setReceiptPaperSize').value;
+    state.settings.receiptFontSize = $('setReceiptFontSize').value;
+    state.settings.receiptHeader = $('setReceiptHeader').value;
+    state.settings.receiptFooter = $('setReceiptFooter').value;
+    saveSettingsToCloud();
+    showToast('تم حفظ تصميم الفاتورة ✅', 'success');
   });
 
-  // Settings: Menu & Inventory (Add & Edit)
-  document.getElementById('settingsMenuSearch')?.addEventListener('input', renderSettingsMenuList);
-  document.getElementById('btnCancelEditMenu')?.addEventListener('click', resetMenuForm);
-  document.getElementById('btnAddMenuItem')?.addEventListener('click', async () => {
-    const editId = document.getElementById('setEditMenuId').value;
-    const name = document.getElementById('setMenuName').value.trim();
-    const category = document.getElementById('setMenuCategory').value;
-    const price = Number(document.getElementById('setMenuPrice').value || 0);
-    const cost = Number(document.getElementById('setMenuCost').value || 0);
-    const stockRaw = document.getElementById('setMenuStock').value;
-    const stock = stockRaw !== '' ? Math.max(0, Number(stockRaw)) : null;
-    const min_stock = Math.max(0, Number(document.getElementById('setMenuMinStock').value || 5));
-    const unit = document.getElementById('setMenuUnit').value.trim() || 'قطعة';
-    const icon = document.getElementById('setMenuIcon').value;
-
-    if (!name || price <= 0) return showToast('أدخل اسم الصنف وسعر البيع', 'warning');
-
-    if (editId) {
-      const item = state.menuItems.find((m) => String(m.id) === String(editId));
-      if (item) {
-        item.name = name;
-        item.category = category;
-        item.price = price;
-        item.cost = cost;
-        item.stock = stock;
-        item.min_stock = min_stock;
-        item.unit = unit;
-        item.icon = icon;
-        state.menuMeta[String(item.id)] = { cost, stock, min_stock, unit };
-        await dbMutate(
-          'menu_items',
-          'update',
-          { name, category, price, cost, stock, min_stock, unit, icon },
-          'id',
-          item.id
-        );
-        await saveSystemStateKey('arena_menu_meta', state.menuMeta);
-      }
-      resetMenuForm();
-    } else {
-      const itemId = 'mn-' + Date.now();
-      const item = { id: itemId, name, category, price, cost, stock, min_stock, unit, icon };
-      state.menuItems.push(item);
-      state.menuMeta[String(itemId)] = { cost, stock, min_stock, unit };
-      await dbMutate('menu_items', 'insert', item);
-      await saveSystemStateKey('arena_menu_meta', state.menuMeta);
-      resetMenuForm();
+  // Settings: Mgmt Password, Users, WhatsApp, Menu, Rooms, Tables, Games
+  $('btnSaveMgmtPass').addEventListener('click', () => {
+    const p1 = $('setMgmtNewPass').value.trim();
+    const p2 = $('setMgmtConfirmPass').value.trim();
+    if (!p1 || p1 !== p2) {
+      showToast('تأكد من إدخال الباسورد وتطابقه!', 'error');
+      return;
     }
-
-    renderAll();
-    showToast('تم حفظ الصنف وتحديث المخزون ✅', 'success');
+    state.settings.mgmtPassword = p1;
+    saveSettingsToCloud();
+    $('setMgmtNewPass').value = '';
+    $('setMgmtConfirmPass').value = '';
+    showToast('تم تحديث باسورد الإدارة ✅', 'success');
   });
+
+  $('btnAddUser').addEventListener('click', saveUser);
+  $('btnCancelEditUser').addEventListener('click', resetUserForm);
+
+  $('btnSaveWhatsapp').addEventListener('click', () => {
+    state.settings.ownerWhatsapp = $('setOwnerWhatsapp').value.trim();
+    saveSettingsToCloud();
+    showToast('تم حفظ رقم واتساب الإدارة ✅', 'success');
+  });
+  $('btnTestWhatsapp').addEventListener('click', () => {
+    state.settings.ownerWhatsapp = $('setOwnerWhatsapp').value.trim();
+    openWhatsappWithText(`✅ رسالة تجريبية من نظام ${state.settings.brandTitle || 'ARENA POS'}`);
+  });
+
+  $('btnAddMenuItem').addEventListener('click', saveMenuItem);
+  $('btnCancelEditMenu').addEventListener('click', resetMenuForm);
+  $('settingsMenuSearch').addEventListener('input', renderSettings);
+
+  $('btnAddRoom').addEventListener('click', saveRoom);
+  $('btnCancelEditRoom').addEventListener('click', resetRoomForm);
+  $('btnAddTable').addEventListener('click', addTable);
+  $('btnAddGame').addEventListener('click', addGame);
 }
 
-// Global Helpers
-window.openMgmtModal = openMgmtAuthModal;
-window.openAdminAuthModal = openMgmtAuthModal;
-window.checkMgmtPassword = verifyMgmtPassword;
-window.unlockMgmtPanel = verifyMgmtPassword;
-
-window.deleteUser = async (id) => {
-  if (!hasAdminPrivilege()) {
-    return showToast('حذف الحسابات متاح لحساب Admin فقط!', 'error');
-  }
-  const target = state.users.find((u) => String(u.id) === String(id));
-  if (!target) return;
-  if (isUserAdmin(target)) {
-    return showToast('لا يمكن حذف حساب Admin الرئيسي — يمكنك تعديل اسمه أو باسورده فقط.', 'warning');
-  }
-  if (!confirm(`هل أنت متأكد من حذف حساب "${target.name}" نهائياً؟`)) return;
-
-  state.users = state.users.filter((u) => String(u.id) !== String(id));
-  await persistUsersEverywhere();
-  await dbMutate('users', 'delete', null, 'id', id);
-  populateLoginUserSelect();
-  renderAll();
-  showToast(`تم حذف حساب "${target.name}" بنجاح ✅`, 'success');
-};
-
-window.deleteRoom = async (id) => {
-  state.rooms = state.rooms.filter((r) => String(r.id) !== String(id));
-  await dbMutate('rooms', 'delete', null, 'id', id);
-  renderAll();
-};
-
-window.deleteTable = async (id) => {
-  state.tables = state.tables.filter((t) => String(t.id) !== String(id));
-  await saveSystemStateKey('arena_tables', state.tables);
-  renderAll();
-};
-
-window.deleteGame = async (id) => {
-  state.games = state.games.filter((g) => String(g.id) !== String(id));
-  await dbMutate('games', 'delete', null, 'id', id);
-  renderSettings();
-};
-
-window.deleteMenuItem = async (id) => {
-  state.menuItems = state.menuItems.filter((m) => String(m.id) !== String(id));
-  delete state.menuMeta[String(id)];
-  await dbMutate('menu_items', 'delete', null, 'id', id);
-  await saveSystemStateKey('arena_menu_meta', state.menuMeta);
-  renderAll();
-};
+// Register Service Worker & Boot
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.register('./sw.js').catch(() => {});
+}
+document.addEventListener('DOMContentLoaded', initApp);
