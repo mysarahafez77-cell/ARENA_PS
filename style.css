@@ -1083,6 +1083,15 @@ input:focus, select:focus, textarea:focus {
   font-size: 0.86rem;
 }
 
+.mini-list-item.expense-item {
+  border-right: 3px solid var(--danger);
+  background: rgba(239, 68, 68, 0.08);
+}
+
+.mini-list-item.tx-item {
+  border-right: 3px solid var(--success);
+}
+
 .stock-quick-controls {
   display: inline-flex;
   align-items: center;
@@ -1282,13 +1291,20 @@ input:focus, select:focus, textarea:focus {
   margin-top: 4px;
 }
 
-/* Checkout & Notah */
+/* Checkout & Multi-Client Notah */
 .checkout-breakdown {
   background: var(--bg-card);
   padding: 10px 12px;
   border-radius: var(--radius-sm);
   font-size: 0.86rem;
   margin-bottom: 12px;
+}
+
+.checkout-sub-line {
+  font-size: 0.78rem;
+  color: var(--text-muted);
+  padding-right: 12px;
+  margin-bottom: 3px;
 }
 
 .checkout-totals-panel {
@@ -1352,7 +1368,50 @@ input:focus, select:focus, textarea:focus {
   display: flex;
   justify-content: space-between;
   align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
   margin-bottom: 8px;
+}
+
+.notah-splits-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 6px;
+}
+
+.notah-split-row {
+  display: grid;
+  grid-template-columns: 1fr 105px auto;
+  gap: 6px;
+  align-items: center;
+  background: rgba(0, 0, 0, 0.28);
+  padding: 6px 8px;
+  border-radius: 8px;
+  border: 1px solid rgba(245, 158, 11, 0.35);
+}
+
+.notah-split-row select,
+.notah-split-row input {
+  padding: 7px 9px;
+  font-size: 0.84rem;
+}
+
+.notah-split-status {
+  font-size: 0.8rem;
+  font-weight: 800;
+  margin-top: 8px;
+  text-align: center;
+  padding: 5px 8px;
+  border-radius: 6px;
+}
+.notah-split-status.valid {
+  background: rgba(16, 185, 129, 0.15);
+  color: var(--success);
+}
+.notah-split-status.invalid {
+  background: rgba(239, 68, 68, 0.15);
+  color: var(--danger);
 }
 
 .quick-client-form {
@@ -1548,6 +1607,16 @@ input:focus, select:focus, textarea:focus {
   gap: 6px;
 }
 
+.receipt-sub-row {
+  display: flex;
+  justify-content: space-between;
+  text-align: right;
+  font-size: 10.5px;
+  color: #333333;
+  padding-right: 8px;
+  margin: 1px 0 3px;
+}
+
 .receipt-footer-text {
   font-weight: 700;
   white-space: pre-line;
@@ -1608,5 +1677,8 @@ input:focus, select:focus, textarea:focus {
   }
   .payment-inputs-grid {
     grid-template-columns: 1fr;
+  }
+  .notah-split-row {
+    grid-template-columns: 1fr 90px auto;
   }
 }
