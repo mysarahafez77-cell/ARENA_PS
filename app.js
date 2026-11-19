@@ -1,7 +1,8 @@
 /* ==========================================================================
-   ARENA POS v3.0 - Complete Operations System
-   Includes: Live Dashboard, PS5 Room Cards + Double-Click, Cafe Tables,
-   Visual POS Grid + Smart Icons, Single<->Multi Switch, Receipt Designer,
+   ARENA POS v4.0 - Complete Operations & Management System
+   Includes: Management Password Lock, Business Day Shift Locking, Wrong Day Fixer,
+   Comprehensive Sales Analytics Filters, PS5 Room Cards + Double-Click, Cafe Tables,
+   Visual POS Grid + Inventory Tracking, Receipt Designer (80mm/58mm),
    Notah Credit System, Reservations, Shift Handover + WhatsApp Reports, Offline Queue
    ========================================================================== */
 
@@ -11,14 +12,15 @@ const DEFAULT_SB_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmF
 const STORAGE_KEYS = {
   URL: 'arena_sb_url',
   KEY: 'arena_sb_key',
-  CACHE: 'arena_local_db_v3',
-  QUEUE: 'arena_offline_queue_v3',
-  USER: 'arena_active_user_v3'
+  CACHE: 'arena_local_db_v4',
+  QUEUE: 'arena_offline_queue_v4',
+  USER: 'arena_active_user_v4'
 };
 
 let sbClient = null;
 let isOnline = navigator.onLine;
 let activeUser = null;
+let isMgmtUnlocked = false;
 let liveTimerInterval = null;
 let sysStateSchema = { idCol: 'id', valCol: 'data' };
 
@@ -27,9 +29,11 @@ let state = {
   tables: [],
   games: [],
   menuItems: [],
+  menuMeta: {},
   users: [],
   clients: [],
   shifts: [],
+  shiftDays: {},
   handovers: [],
   transactions: [],
   expenses: [],
@@ -38,7 +42,10 @@ let state = {
     receiptLogo: '',
     receiptHeader: 'ARENA PLAYSTATION & CAFE\nأهلاً بكم في أرينا',
     receiptFooter: 'شكراً لزيارتكم - نتمنى لكم وقتاً ممتعاً!',
-    ownerWhatsapp: ''
+    receiptPaperSize: '80mm',
+    receiptFontSize: 'normal',
+    ownerWhatsapp: '',
+    mgmtPassword: '1234'
   }
 };
 
@@ -54,7 +61,59 @@ let pendingReservationId = null;
 let lastClosedShiftReportText = '';
 let lastHandoverReportText = '';
 
-/* ================= 1. INITIALIZATION & OFFLINE WORKER ================= */
+/* ================= 1. DATE HELPERS & INITIALIZATION ================= */
+
+function getLocalDateStr(dateInput = new Date()) {
+  const d = dateInput instanceof Date ? dateInput : new Date(dateInput);
+  if (isNaN(d.getTime())) return new Date().toISOString().slice(0, 10);
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
+
+function formatBusinessDateAr(dateStr) {
+  if (!dateStr) return '-';
+  try {
+    const parts = dateStr.split('-').map(Number);
+    const d = new Date(parts[0], parts[1] - 1, parts[2]);
+    const dayName = d.toLocaleDateString('ar-EG', { weekday: 'long' });
+    return `${dayName} (${dateStr})`;
+  } catch (_) {
+    return dateStr;
+  }
+}
+
+function getShiftBusinessDate(shift) {
+  if (!shift) return getLocalDateStr();
+  return (
+    shift.business_date ||
+    state.shiftDays[String(shift.id)] ||
+    getLocalDateStr(shift.start_time)
+  );
+}
+
+function getTxBusinessDate(tx) {
+  if (!tx) return getLocalDateStr();
+  if (tx.business_date) return tx.business_date;
+  if (tx.shift_id && state.shiftDays[String(tx.shift_id)]) {
+    return state.shiftDays[String(tx.shift_id)];
+  }
+  const linkedShift = state.shifts.find((s) => String(s.id) === String(tx.shift_id));
+  if (linkedShift) return getShiftBusinessDate(linkedShift);
+  return getLocalDateStr(tx.created_at);
+}
+
+function getExpBusinessDate(exp) {
+  if (!exp) return getLocalDateStr();
+  if (exp.business_date) return exp.business_date;
+  if (exp.shift_id && state.shiftDays[String(exp.shift_id)]) {
+    return state.shiftDays[String(exp.shift_id)];
+  }
+  const linkedShift = state.shifts.find((s) => String(s.id) === String(exp.shift_id));
+  if (linkedShift) return getShiftBusinessDate(linkedShift);
+  return getLocalDateStr(exp.created_at);
+}
 
 document.addEventListener('DOMContentLoaded', async () => {
   registerServiceWorker();
@@ -94,6 +153,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     } catch (_) {}
   }
 
+  populateLoginUserSelect();
   showScreen('loginScreen');
 });
 
@@ -151,7 +211,9 @@ function loadLocalCache() {
       state = {
         ...state,
         ...parsed,
-        settings: { ...state.settings, ...(parsed.settings || {}) }
+        settings: { ...state.settings, ...(parsed.settings || {}) },
+        menuMeta: parsed.menuMeta || {},
+        shiftDays: parsed.shiftDays || {}
       };
     }
   } catch (_) {}
@@ -178,6 +240,9 @@ function ensureDefaultsIfEmpty() {
       status: 'idle',
       session: null
     }));
+  }
+  if (!state.settings.mgmtPassword) {
+    state.settings.mgmtPassword = '1234';
   }
 }
 
@@ -292,49 +357,13 @@ async function syncAllDataFromCloud() {
       sbClient.from('menu_items').select('*'),
       sbClient.from('users').select('*'),
       sbClient.from('clients').select('*'),
-      sbClient.from('shifts').select('*').order('start_time', { ascending: false }).limit(30),
-      sbClient.from('transactions').select('*').order('created_at', { ascending: false }).limit(250),
-      sbClient.from('expenses').select('*').order('created_at', { ascending: false }).limit(150),
+      sbClient.from('shifts').select('*').order('start_time', { ascending: false }).limit(60),
+      sbClient.from('transactions').select('*').order('created_at', { ascending: false }).limit(500),
+      sbClient.from('expenses').select('*').order('created_at', { ascending: false }).limit(250),
       sbClient.from('reservations').select('*').order('res_datetime', { ascending: true }),
       sbClient.from('system_state').select('*')
     ]);
 
-    if (roomsRes.data && roomsRes.data.length > 0) {
-      state.rooms = roomsRes.data.map(normalizeRoom);
-    }
-    if (gamesRes.data && gamesRes.data.length > 0) {
-      state.games = gamesRes.data;
-    }
-    if (menuRes.data) {
-      state.menuItems = menuRes.data.map((m) => ({
-        ...m,
-        category: m.category || 'مشروبات ساخنة',
-        icon: m.icon || 'auto',
-        price: Number(m.price || 0)
-      }));
-    }
-    if (usersRes.data && usersRes.data.length > 0) {
-      state.users = usersRes.data;
-    }
-    if (clientsRes.data) {
-      state.clients = clientsRes.data.map((c) => ({
-        ...c,
-        notah_balance: Number(c.notah_balance || 0),
-        notah_history: Array.isArray(c.notah_history) ? c.notah_history : []
-      }));
-    }
-    if (shiftsRes.data) {
-      state.shifts = shiftsRes.data;
-    }
-    if (txRes.data) {
-      state.transactions = txRes.data;
-    }
-    if (expRes.data) {
-      state.expenses = expRes.data;
-    }
-    if (resvRes.data) {
-      state.reservations = resvRes.data;
-    }
     if (sysRes.data && sysRes.data.length > 0) {
       const sample = sysRes.data[0];
       if ('key' in sample && 'value' in sample) {
@@ -354,9 +383,71 @@ async function syncAllDataFromCloud() {
       if (hoRow && Array.isArray(hoRow[sysStateSchema.valCol])) {
         state.handovers = hoRow[sysStateSchema.valCol];
       }
+      const menuMetaRow = sysRes.data.find((r) => r[sysStateSchema.idCol] === 'arena_menu_meta');
+      if (menuMetaRow && menuMetaRow[sysStateSchema.valCol] && typeof menuMetaRow[sysStateSchema.valCol] === 'object') {
+        state.menuMeta = menuMetaRow[sysStateSchema.valCol];
+      }
+      const shiftDaysRow = sysRes.data.find((r) => r[sysStateSchema.idCol] === 'arena_shift_days');
+      if (shiftDaysRow && shiftDaysRow[sysStateSchema.valCol] && typeof shiftDaysRow[sysStateSchema.valCol] === 'object') {
+        state.shiftDays = shiftDaysRow[sysStateSchema.valCol];
+      }
+    }
+
+    if (roomsRes.data && roomsRes.data.length > 0) {
+      state.rooms = roomsRes.data.map(normalizeRoom);
+    }
+    if (gamesRes.data && gamesRes.data.length > 0) {
+      state.games = gamesRes.data;
+    }
+    if (menuRes.data) {
+      state.menuItems = menuRes.data.map((m) => {
+        const meta = state.menuMeta[String(m.id)] || {};
+        return {
+          ...m,
+          category: m.category || 'مشروبات ساخنة',
+          icon: m.icon || 'auto',
+          price: Number(m.price || 0),
+          cost: Number(m.cost ?? meta.cost ?? 0),
+          stock: m.stock !== undefined && m.stock !== null ? Number(m.stock) : (meta.stock !== undefined ? Number(meta.stock) : null),
+          min_stock: Number(m.min_stock ?? meta.min_stock ?? 5),
+          unit: m.unit || meta.unit || 'قطعة'
+        };
+      });
+    }
+    if (usersRes.data && usersRes.data.length > 0) {
+      state.users = usersRes.data;
+    }
+    if (clientsRes.data) {
+      state.clients = clientsRes.data.map((c) => ({
+        ...c,
+        notah_balance: Number(c.notah_balance || 0),
+        notah_history: Array.isArray(c.notah_history) ? c.notah_history : []
+      }));
+    }
+    if (shiftsRes.data) {
+      state.shifts = shiftsRes.data.map((s) => ({
+        ...s,
+        business_date: s.business_date || state.shiftDays[String(s.id)] || getLocalDateStr(s.start_time)
+      }));
+    }
+    if (txRes.data) {
+      state.transactions = txRes.data.map((t) => ({
+        ...t,
+        business_date: getTxBusinessDate(t)
+      }));
+    }
+    if (expRes.data) {
+      state.expenses = expRes.data.map((e) => ({
+        ...e,
+        business_date: getExpBusinessDate(e)
+      }));
+    }
+    if (resvRes.data) {
+      state.reservations = resvRes.data;
     }
 
     ensureDefaultsIfEmpty();
+    populateLoginUserSelect();
     saveLocalCache();
     if (activeUser) renderAll();
   } catch (err) {
@@ -398,7 +489,22 @@ async function saveSystemStateKey(keyName, valueObj) {
   await dbMutate('system_state', 'upsert', payload, sysStateSchema.idCol, keyName);
 }
 
-/* ================= 4. AUTH & NAVIGATION ================= */
+/* ================= 4. AUTH, MANAGEMENT PASSWORD LOCK & NAVIGATION ================= */
+
+function populateLoginUserSelect() {
+  const sel = document.getElementById('loginUserSelect');
+  if (!sel) return;
+  const currentVal = sel.value;
+  sel.innerHTML =
+    `<option value="">-- دخول سريع بالرقم السري / الباسورد --</option>` +
+    state.users
+      .map(
+        (u) =>
+          `<option value="${u.id}">${escapeHtml(u.name)} (${u.role === 'admin' ? 'مدير' : 'كاشير'})</option>`
+      )
+      .join('');
+  if (currentVal) sel.value = currentVal;
+}
 
 function showScreen(screenId) {
   ['setupScreen', 'loginScreen', 'mainApp'].forEach((id) => {
@@ -410,9 +516,16 @@ function showScreen(screenId) {
 function handleLogin() {
   const pinInput = document.getElementById('loginPin');
   const errEl = document.getElementById('loginError');
+  const selectedUserId = document.getElementById('loginUserSelect')?.value || '';
   const pin = (pinInput.value || '').trim();
 
-  const found = state.users.find((u) => String(u.pin) === pin);
+  let found = null;
+  if (selectedUserId) {
+    found = state.users.find((u) => String(u.id) === String(selectedUserId) && String(u.pin) === pin);
+  } else {
+    found = state.users.find((u) => String(u.pin) === pin);
+  }
+
   if (!found) {
     errEl.classList.remove('hidden');
     pinInput.value = '';
@@ -422,6 +535,7 @@ function handleLogin() {
   errEl.classList.add('hidden');
   pinInput.value = '';
   activeUser = found;
+  isMgmtUnlocked = false;
   sessionStorage.setItem(STORAGE_KEYS.USER, JSON.stringify(found));
   enterMainApp();
 }
@@ -431,11 +545,9 @@ function enterMainApp() {
   document.getElementById('currentUserBadge').textContent =
     `${activeUser.name} (${activeUser.role === 'admin' ? 'مدير' : 'كاشير'})`;
 
-  document.querySelectorAll('.admin-only').forEach((el) => {
-    el.classList.toggle('hidden', activeUser.role !== 'admin');
-  });
+  updateMgmtLockUI();
 
-  const todayStr = new Date().toISOString().slice(0, 10);
+  const todayStr = getLocalDateStr();
   const fromEl = document.getElementById('reportDateFrom');
   const toEl = document.getElementById('reportDateTo');
   if (fromEl && !fromEl.value) fromEl.value = todayStr;
@@ -447,6 +559,77 @@ function enterMainApp() {
   flushOfflineQueue();
 }
 
+function updateMgmtLockUI() {
+  const indicator = document.getElementById('mgmtLockIndicator');
+  if (indicator) {
+    if (isMgmtUnlocked) {
+      indicator.className = 'mgmt-pill unlocked';
+      indicator.textContent = '🔓 الإدارة مفتوحة';
+    } else {
+      indicator.className = 'mgmt-pill locked';
+      indicator.textContent = '🔒 الإدارة مقفولة';
+    }
+  }
+
+  document.querySelectorAll('.nav-tab.mgmt-protected').forEach((tabBtn) => {
+    const labelMap = {
+      dashboard: isMgmtUnlocked ? '📊 الداشبورد والتحكم' : '🔒📊 الداشبورد والتحكم',
+      reports: isMgmtUnlocked ? '📑 التقارير والسجل' : '🔒📑 التقارير والسجل',
+      settings: isMgmtUnlocked ? '⚙️ الإعدادات والمنيو والمخزون' : '🔒⚙️ الإعدادات والمنيو والمخزون'
+    };
+    if (labelMap[tabBtn.dataset.tab]) {
+      tabBtn.textContent = labelMap[tabBtn.dataset.tab];
+    }
+  });
+
+  ['dashboard', 'reports', 'settings'].forEach((sec) => {
+    const gate = document.getElementById(`${sec}LockedGate`);
+    const content = document.getElementById(`${sec}UnlockedContent`);
+    if (gate) gate.classList.toggle('hidden', isMgmtUnlocked);
+    if (content) content.classList.toggle('hidden', !isMgmtUnlocked);
+  });
+}
+
+function openMgmtAuthModal(targetTab = 'dashboard') {
+  if (isMgmtUnlocked) {
+    switchTab(targetTab);
+    return;
+  }
+  document.getElementById('mgmtTargetTab').value = targetTab;
+  document.getElementById('mgmtPasswordInput').value = '';
+  document.getElementById('mgmtAuthError').classList.add('hidden');
+  openModal('modalMgmtAuth');
+  setTimeout(() => document.getElementById('mgmtPasswordInput')?.focus(), 100);
+}
+
+function verifyMgmtPassword() {
+  const entered = (document.getElementById('mgmtPasswordInput').value || '').trim();
+  const actualPass = String(state.settings.mgmtPassword || '1234');
+  const errEl = document.getElementById('mgmtAuthError');
+
+  if (entered !== actualPass) {
+    errEl.classList.remove('hidden');
+    document.getElementById('mgmtPasswordInput').value = '';
+    document.getElementById('mgmtPasswordInput').focus();
+    return;
+  }
+
+  errEl.classList.add('hidden');
+  isMgmtUnlocked = true;
+  closeModal('modalMgmtAuth');
+  updateMgmtLockUI();
+  const targetTab = document.getElementById('mgmtTargetTab').value || 'dashboard';
+  switchTab(targetTab);
+  showToast('تم فتح لوحة تحكم الإدارة بنجاح 🔓', 'success');
+}
+
+function lockMgmtPanel() {
+  isMgmtUnlocked = false;
+  updateMgmtLockUI();
+  switchTab('rooms');
+  showToast('تم قفل لوحة الإدارة بباسورد 🔒', 'info');
+}
+
 function switchTab(tabName) {
   document.querySelectorAll('.nav-tab').forEach((btn) => {
     btn.classList.toggle('active', btn.dataset.tab === tabName);
@@ -454,6 +637,12 @@ function switchTab(tabName) {
   document.querySelectorAll('.tab-panel').forEach((panel) => {
     panel.classList.toggle('active', panel.id === `tab-${tabName}`);
   });
+
+  if (['dashboard', 'reports', 'settings'].includes(tabName) && !isMgmtUnlocked) {
+    updateMgmtLockUI();
+    openMgmtAuthModal(tabName);
+    return;
+  }
 
   if (tabName === 'dashboard') renderDashboard();
   if (tabName === 'rooms') renderRooms();
@@ -466,46 +655,302 @@ function switchTab(tabName) {
   if (tabName === 'settings') renderSettings();
 }
 
-/* ================= 5. LIVE DASHBOARD ================= */
+/* ================= 5. MANAGEMENT DASHBOARD & ANALYTICS FILTERS ================= */
+
+function getAllRecordedBusinessDays() {
+  const daysSet = new Set();
+  const openShift = getOpenShift();
+  if (openShift) daysSet.add(getShiftBusinessDate(openShift));
+
+  state.shifts.forEach((s) => daysSet.add(getShiftBusinessDate(s)));
+  state.transactions.forEach((t) => daysSet.add(getTxBusinessDate(t)));
+  state.expenses.forEach((e) => daysSet.add(getExpBusinessDate(e)));
+
+  return Array.from(daysSet).filter(Boolean).sort((a, b) => b.localeCompare(a));
+}
+
+function populateDashboardFilters() {
+  const openShift = getOpenShift();
+  const currentDay = openShift ? getShiftBusinessDate(openShift) : getLocalDateStr();
+  const allDays = getAllRecordedBusinessDays();
+
+  // Business Day Filter
+  const daySel = document.getElementById('dashFilterBusinessDay');
+  if (daySel) {
+    const prev = daySel.value || 'CURRENT';
+    const otherDays = allDays.filter((d) => d !== currentDay);
+    daySel.innerHTML =
+      `<option value="CURRENT">اليوم / الوردية الحالية (${currentDay})</option>` +
+      `<option value="ALL">كل الأيام المسجلة</option>` +
+      otherDays.map((d) => `<option value="${d}">${formatBusinessDateAr(d)}</option>`).join('');
+    if ([...daySel.options].some((o) => o.value === prev)) {
+      daySel.value = prev;
+    }
+  }
+
+  // Wrong Day Select (for fixing wrong opened business day)
+  const wrongDaySel = document.getElementById('dashWrongDaySelect');
+  if (wrongDaySel) {
+    const prevWrong = wrongDaySel.value;
+    if (allDays.length === 0) {
+      wrongDaySel.innerHTML = `<option value="">لا توجد أيام مسجلة حالياً</option>`;
+    } else {
+      wrongDaySel.innerHTML = allDays
+        .map((d) => {
+          const isCurrentOpen = openShift && getShiftBusinessDate(openShift) === d;
+          return `<option value="${d}">${formatBusinessDateAr(d)}${isCurrentOpen ? ' — [مفتوح حالياً]' : ''}</option>`;
+        })
+        .join('');
+      if (prevWrong && allDays.includes(prevWrong)) {
+        wrongDaySel.value = prevWrong;
+      }
+    }
+  }
+
+  const correctDayInput = document.getElementById('dashCorrectDayInput');
+  if (correctDayInput && !correctDayInput.value) {
+    correctDayInput.value = getLocalDateStr();
+  }
+
+  // Rooms & Tables Filter
+  const roomSel = document.getElementById('dashFilterRoom');
+  if (roomSel) {
+    const prevRoom = roomSel.value || 'ALL';
+    roomSel.innerHTML =
+      `<option value="ALL">كل الغرف والكافيه</option>` +
+      `<option value="ROOMS_ONLY">كل الغرف فقط</option>` +
+      `<option value="CAFE_ONLY">الترابيزات والتيك أواي فقط</option>` +
+      state.rooms.map((r) => `<option value="room:${escapeAttr(r.name)}">🎮 ${escapeHtml(r.name)}</option>`).join('') +
+      state.tables.map((t) => `<option value="table:${escapeAttr(t.name)}">🪑 ${escapeHtml(t.name)}</option>`).join('');
+    if ([...roomSel.options].some((o) => o.value === prevRoom)) {
+      roomSel.value = prevRoom;
+    }
+  }
+
+  // Drinks / Menu Items Filter
+  const drinkSel = document.getElementById('dashFilterDrink');
+  if (drinkSel) {
+    const prevDrink = drinkSel.value || 'ALL';
+    drinkSel.innerHTML =
+      `<option value="ALL">كل المشاريب والأصناف</option>` +
+      state.menuItems
+        .map((m) => `<option value="${escapeAttr(m.name)}">☕ ${escapeHtml(m.name)} (${m.price} ج)</option>`)
+        .join('');
+    if ([...drinkSel.options].some((o) => o.value === prevDrink)) {
+      drinkSel.value = prevDrink;
+    }
+  }
+
+  // Cashier Filter
+  const cashierSel = document.getElementById('dashFilterCashier');
+  if (cashierSel) {
+    const prevCashier = cashierSel.value || 'ALL';
+    const cashierNames = new Set(state.users.map((u) => u.name));
+    state.transactions.forEach((t) => {
+      if (t.staff_name) cashierNames.add(t.staff_name);
+    });
+    cashierSel.innerHTML =
+      `<option value="ALL">كل الكاشيرية</option>` +
+      Array.from(cashierNames)
+        .map((name) => `<option value="${escapeAttr(name)}">👤 ${escapeHtml(name)}</option>`)
+        .join('');
+    if ([...cashierSel.options].some((o) => o.value === prevCashier)) {
+      cashierSel.value = prevCashier;
+    }
+  }
+}
+
+function extractTxItems(tx) {
+  if (Array.isArray(tx.items) && tx.items.length > 0) {
+    return tx.items;
+  }
+  const found = [];
+  const desc = tx.description || '';
+  state.menuItems.forEach((m) => {
+    const regex = new RegExp(`${escapeRegExp(m.name)}\\s*×\\s*(\\d+)`, 'g');
+    let match;
+    let totalQty = 0;
+    while ((match = regex.exec(desc)) !== null) {
+      totalQty += Number(match[1]);
+    }
+    if (totalQty > 0) {
+      found.push({
+        id: m.id,
+        name: m.name,
+        price: Number(m.price || 0),
+        qty: totalQty
+      });
+    }
+  });
+  return found;
+}
 
 function renderDashboard() {
-  const todayStart = new Date();
-  todayStart.setHours(0, 0, 0, 0);
-  const todayMs = todayStart.getTime();
-
-  const todayTxs = state.transactions.filter((t) => new Date(t.created_at).getTime() >= todayMs);
-
-  let todaySales = 0;
-  let todayNotah = 0;
-  let todayNotahCollected = 0;
-  let todayVfCash = 0;
-
-  todayTxs.forEach((t) => {
-    const amt = Number(t.amount || 0);
-    if (t.type === 'room' || t.type === 'cafe' || t.type === 'table') {
-      todaySales += amt;
-    } else if (t.type === 'notah_collection') {
-      todayNotahCollected += amt;
-    }
-    todayNotah += Number(t.notah_amount || 0);
-    todayVfCash += Number(t.vfcash_amount || 0);
-  });
+  if (!isMgmtUnlocked) return;
+  populateDashboardFilters();
 
   const openShift = getOpenShift();
-  const drawerCash = openShift ? computeShiftStats(openShift).expectedDrawer : 0;
+  const currentDay = openShift ? getShiftBusinessDate(openShift) : getLocalDateStr();
 
+  const dayFilter = document.getElementById('dashFilterBusinessDay')?.value || 'CURRENT';
+  const dateFrom = document.getElementById('dashFilterDateFrom')?.value || '';
+  const dateTo = document.getElementById('dashFilterDateTo')?.value || '';
+  const roomFilter = document.getElementById('dashFilterRoom')?.value || 'ALL';
+  const drinkFilter = document.getElementById('dashFilterDrink')?.value || 'ALL';
+  const cashierFilter = document.getElementById('dashFilterCashier')?.value || 'ALL';
+
+  const filteredTxs = state.transactions.filter((t) => {
+    const txDay = getTxBusinessDate(t);
+
+    if (dayFilter === 'CURRENT') {
+      if (txDay !== currentDay) return false;
+    } else if (dayFilter !== 'ALL') {
+      if (txDay !== dayFilter) return false;
+    }
+
+    if (dateFrom && txDay < dateFrom) return false;
+    if (dateTo && txDay > dateTo) return false;
+
+    if (cashierFilter !== 'ALL' && (t.staff_name || '') !== cashierFilter) {
+      return false;
+    }
+
+    if (roomFilter === 'ROOMS_ONLY') {
+      if (t.type !== 'room') return false;
+    } else if (roomFilter === 'CAFE_ONLY') {
+      if (t.type !== 'cafe' && t.type !== 'table') return false;
+    } else if (roomFilter.startsWith('room:')) {
+      const targetRoomName = roomFilter.slice(5);
+      if (t.type !== 'room' || !(t.description || '').startsWith(targetRoomName)) return false;
+    } else if (roomFilter.startsWith('table:')) {
+      const targetTableName = roomFilter.slice(6);
+      if (t.type !== 'table' || !(t.description || '').startsWith(targetTableName)) return false;
+    }
+
+    if (drinkFilter !== 'ALL') {
+      const items = extractTxItems(t);
+      if (!items.some((it) => it.name === drinkFilter)) return false;
+    }
+
+    return true;
+  });
+
+  let filteredTotalSales = 0;
+  let filteredRoomsRev = 0;
+  let filteredDrinksRev = 0;
+  let filteredNotah = 0;
+  let filteredNotahCollected = 0;
+  let filteredVfCash = 0;
+
+  const roomBreakdown = {};
+  const drinkBreakdown = {};
+
+  filteredTxs.forEach((t) => {
+    const amt = Number(t.amount || 0);
+    const items = extractTxItems(t);
+
+    if (drinkFilter !== 'ALL') {
+      const matchedItems = items.filter((it) => it.name === drinkFilter);
+      const itemRev = matchedItems.reduce((s, it) => s + Number(it.price) * Number(it.qty), 0);
+      filteredTotalSales += itemRev;
+      filteredDrinksRev += itemRev;
+    } else {
+      if (t.type === 'room' || t.type === 'cafe' || t.type === 'table') {
+        filteredTotalSales += amt;
+      } else if (t.type === 'notah_collection') {
+        filteredNotahCollected += amt;
+      }
+
+      if (t.type === 'room') {
+        const ordersPart = Number(t.orders_cost || items.reduce((s, it) => s + Number(it.price) * Number(it.qty), 0));
+        const timePart = t.time_cost !== undefined ? Number(t.time_cost) : Math.max(0, amt - ordersPart);
+        filteredRoomsRev += timePart;
+        filteredDrinksRev += ordersPart;
+
+        const roomLabel = (t.description || '').split('(')[0].trim() || 'غرفة';
+        if (!roomBreakdown[roomLabel]) roomBreakdown[roomLabel] = { count: 0, revenue: 0 };
+        roomBreakdown[roomLabel].count += 1;
+        roomBreakdown[roomLabel].revenue += timePart;
+      } else if (t.type === 'cafe' || t.type === 'table') {
+        filteredDrinksRev += amt;
+      }
+    }
+
+    items.forEach((it) => {
+      if (drinkFilter !== 'ALL' && it.name !== drinkFilter) return;
+      if (!drinkBreakdown[it.name]) drinkBreakdown[it.name] = { qty: 0, revenue: 0 };
+      drinkBreakdown[it.name].qty += Number(it.qty);
+      drinkBreakdown[it.name].revenue += Number(it.price) * Number(it.qty);
+    });
+
+    filteredNotah += Number(t.notah_amount || 0);
+    filteredVfCash += Number(t.vfcash_amount || 0);
+  });
+
+  const drawerCash = openShift ? computeShiftStats(openShift).expectedDrawer : 0;
   const runningRooms = state.rooms.filter((r) => r.status === 'running');
   const openTables = state.tables.filter((t) => t.status === 'open');
   const totalMarketNotah = state.clients.reduce((s, c) => s + Number(c.notah_balance || 0), 0);
 
-  document.getElementById('dashTodayTotal').textContent = `${todaySales} ج.م`;
+  document.getElementById('dashTodayTotal').textContent = `${filteredTotalSales} ج.م`;
+  document.getElementById('dashFilteredRoomsRev').textContent = `${filteredRoomsRev} ج.م`;
+  document.getElementById('dashFilteredDrinksRev').textContent = `${filteredDrinksRev} ج.م`;
   document.getElementById('dashDrawerCash').textContent = `${drawerCash} ج.م`;
-  document.getElementById('dashTodayNotah').textContent = `${todayNotah} ج.م`;
-  document.getElementById('dashTodayNotahCollected').textContent = `${todayNotahCollected} ج.م`;
-  document.getElementById('dashTodayVfCash').textContent = `${todayVfCash} ج.م`;
-  document.getElementById('dashActiveRoomsCount').textContent = `${runningRooms.length} / ${state.rooms.length}`;
-  document.getElementById('dashActiveTablesCount').textContent = `${openTables.length} / ${state.tables.length}`;
+  document.getElementById('dashTodayNotah').textContent = `${filteredNotah} ج.م`;
+  document.getElementById('dashTodayNotahCollected').textContent = `${filteredNotahCollected} ج.م`;
+  document.getElementById('dashTodayVfCash').textContent = `${filteredVfCash} ج.م`;
+  document.getElementById('dashActiveRoomsCount').textContent = `${runningRooms.length}/${state.rooms.length}`;
+  document.getElementById('dashActiveTablesCount').textContent = `${openTables.length}/${state.tables.length}`;
   document.getElementById('dashMarketNotah').textContent = `${totalMarketNotah} ج.م`;
+
+  // Filter summary tag
+  const summaryTag = document.getElementById('dashFilterSummaryTag');
+  if (summaryTag) {
+    const parts = [];
+    if (dayFilter === 'CURRENT') parts.push(`اليوم الحالي (${currentDay})`);
+    else if (dayFilter === 'ALL') parts.push('كل الأيام');
+    else parts.push(`يوم ${dayFilter}`);
+    if (roomFilter !== 'ALL') parts.push(roomFilter.replace('room:', '').replace('table:', ''));
+    if (drinkFilter !== 'ALL') parts.push(drinkFilter);
+    if (cashierFilter !== 'ALL') parts.push(cashierFilter);
+    summaryTag.textContent = parts.join(' • ');
+  }
+
+  // Analytical Breakdown Table
+  const breakdownBody = document.getElementById('dashAnalyticsBreakdownBody');
+  if (breakdownBody) {
+    const rows = [];
+    Object.entries(roomBreakdown)
+      .sort((a, b) => b[1].revenue - a[1].revenue)
+      .forEach(([name, data]) => {
+        rows.push(`
+          <tr>
+            <td><strong>🎮 ${escapeHtml(name)}</strong></td>
+            <td><span class="badge badge-upcoming">لعب / غرفة</span></td>
+            <td>${data.count} جلسة</td>
+            <td><strong style="color:var(--ps-cyan)">${data.revenue} ج.م</strong></td>
+          </tr>
+        `);
+      });
+
+    Object.entries(drinkBreakdown)
+      .sort((a, b) => b[1].revenue - a[1].revenue)
+      .forEach(([name, data]) => {
+        rows.push(`
+          <tr>
+            <td><strong>☕ ${escapeHtml(name)}</strong></td>
+            <td><span class="badge badge-completed">مشروب / صنف</span></td>
+            <td>${data.qty} قطعة</td>
+            <td><strong style="color:var(--success)">${data.revenue} ج.م</strong></td>
+          </tr>
+        `);
+      });
+
+    breakdownBody.innerHTML =
+      rows.length === 0
+        ? `<tr><td colspan="4" style="text-align:center;color:var(--text-muted)">لا توجد بيانات مطابقة للفلتر المختار</td></tr>`
+        : rows.join('');
+  }
 
   // Live Rooms & Tables Quick Grid
   const unitsEl = document.getElementById('dashLiveUnitsGrid');
@@ -545,31 +990,21 @@ function renderDashboard() {
     unitsEl.innerHTML = [...roomChips, ...tableChips].join('');
   }
 
-  // Top Selling Items & Upcoming Reservations
+  // Top Selling Items
   const topItemsEl = document.getElementById('dashTopItemsList');
   if (topItemsEl) {
-    const itemCounts = {};
-    todayTxs.forEach((t) => {
-      const desc = t.description || '';
-      state.menuItems.forEach((m) => {
-        const regex = new RegExp(`${escapeRegExp(m.name)}\\s*×\\s*(\\d+)`, 'g');
-        let match;
-        while ((match = regex.exec(desc)) !== null) {
-          itemCounts[m.name] = (itemCounts[m.name] || 0) + Number(match[1]);
-        }
-      });
-    });
-
-    const sortedItems = Object.entries(itemCounts).sort((a, b) => b[1] - a[1]).slice(0, 5);
+    const sortedItems = Object.entries(drinkBreakdown)
+      .sort((a, b) => b[1].qty - a[1].qty)
+      .slice(0, 6);
     topItemsEl.innerHTML =
       sortedItems.length === 0
-        ? `<p class="hint-text">ستظهر هنا أكثر الأصناف طلباً خلال اليوم</p>`
+        ? `<p class="hint-text">ستظهر هنا أكثر الأصناف طلباً حسب الفلتر</p>`
         : sortedItems
             .map(
-              ([name, qty]) => `
+              ([name, data]) => `
             <div class="mini-list-item">
               <span>☕ ${escapeHtml(name)}</span>
-              <strong>${qty} قطعة</strong>
+              <strong>${data.qty} قطعة (${data.revenue} ج)</strong>
             </div>
           `
             )
@@ -594,18 +1029,18 @@ function renderDashboard() {
             .join('');
   }
 
-  // Recent Transactions Today
+  // Filtered Transactions Table
   const recentBody = document.getElementById('dashRecentTxBody');
   if (recentBody) {
-    const recent = todayTxs.slice(0, 10);
     recentBody.innerHTML =
-      recent.length === 0
-        ? `<tr><td colspan="5" style="text-align:center;color:var(--text-muted)">لا توجد فواتير مسجلة اليوم بعد</td></tr>`
-        : recent
+      filteredTxs.length === 0
+        ? `<tr><td colspan="5" style="text-align:center;color:var(--text-muted)">لا توجد فواتير مطابقة للفلتر</td></tr>`
+        : filteredTxs
+            .slice(0, 50)
             .map(
               (t) => `
             <tr>
-              <td>${formatTimeShort(t.created_at)}</td>
+              <td><span style="color:var(--ps-cyan);font-weight:700">${getTxBusinessDate(t)}</span> • ${formatTimeShort(t.created_at)}</td>
               <td><strong>${escapeHtml(t.description)}</strong></td>
               <td><strong style="color:var(--success)">${t.amount} ج.م</strong></td>
               <td>${escapeHtml(t.payment_summary || '')}</td>
@@ -615,6 +1050,113 @@ function renderDashboard() {
             )
             .join('');
   }
+}
+
+/* ================= 5B. FIX / CANCEL WRONG BUSINESS DAY ================= */
+
+async function handleFixWrongBusinessDay() {
+  const wrongDay = document.getElementById('dashWrongDaySelect')?.value || '';
+  const correctDay = document.getElementById('dashCorrectDayInput')?.value || '';
+  const keepActiveTimers = document.getElementById('dashKeepActiveTimers')?.checked ?? true;
+
+  if (!wrongDay) return showToast('اختر اليوم الغلط أولاً', 'warning');
+  if (!correctDay) return showToast('اختر اليوم الصح اللي هيتفتح مكانه', 'warning');
+  if (wrongDay === correctDay) {
+    return showToast('اليوم الصح هو نفس اليوم المختار! اختر تاريخ مختلف للتصحيح.', 'warning');
+  }
+
+  const ok = confirm(
+    `تأكيد التصحيح:\nسيتم إلغاء ومسح يوم (${wrongDay}) بالكامل من السجلات والتقارير كأنه لم يُفتح، وفتح يوم (${correctDay}) مكانه.\nهل تريد المتابعة؟`
+  );
+  if (!ok) return;
+
+  // Find shifts on wrongDay
+  const wrongShifts = state.shifts.filter((s) => getShiftBusinessDate(s) === wrongDay);
+  const wrongShiftIds = new Set(wrongShifts.map((s) => String(s.id)));
+  const wasOpenShift = wrongShifts.find((s) => s.status === 'open');
+  const carriedStartCash = wasOpenShift ? Number(wasOpenShift.start_cash || 0) : 0;
+
+  // Delete transactions of wrongDay
+  const txsToDelete = state.transactions.filter(
+    (t) => getTxBusinessDate(t) === wrongDay || wrongShiftIds.has(String(t.shift_id))
+  );
+  state.transactions = state.transactions.filter(
+    (t) => getTxBusinessDate(t) !== wrongDay && !wrongShiftIds.has(String(t.shift_id))
+  );
+  for (const t of txsToDelete) {
+    await dbMutate('transactions', 'delete', null, 'id', t.id);
+  }
+
+  // Delete expenses of wrongDay
+  const expsToDelete = state.expenses.filter(
+    (e) => getExpBusinessDate(e) === wrongDay || wrongShiftIds.has(String(e.shift_id))
+  );
+  state.expenses = state.expenses.filter(
+    (e) => getExpBusinessDate(e) !== wrongDay && !wrongShiftIds.has(String(e.shift_id))
+  );
+  for (const e of expsToDelete) {
+    await dbMutate('expenses', 'delete', null, 'id', e.id);
+  }
+
+  // Remove handovers linked to wrong shifts
+  state.handovers = state.handovers.filter((h) => !wrongShiftIds.has(String(h.shift_id)));
+  await saveSystemStateKey('arena_handovers', state.handovers);
+
+  // Delete wrong shifts
+  state.shifts = state.shifts.filter((s) => !wrongShiftIds.has(String(s.id)));
+  for (const s of wrongShifts) {
+    delete state.shiftDays[String(s.id)];
+    await dbMutate('shifts', 'delete', null, 'id', s.id);
+  }
+
+  // If keepActiveTimers is false, reset rooms & tables
+  if (!keepActiveTimers) {
+    for (const r of state.rooms) {
+      if (r.status === 'running') {
+        r.status = 'idle';
+        r.session = null;
+        await dbMutate('rooms', 'update', { status: 'idle', session: null }, 'id', r.id);
+      }
+    }
+    state.tables.forEach((t) => {
+      t.status = 'idle';
+      t.session = null;
+    });
+    await saveSystemStateKey('arena_tables', state.tables);
+  }
+
+  // Close any other accidental open shift & open the correct business day shift
+  const existingOpen = getOpenShift();
+  if (!existingOpen) {
+    const newShift = {
+      id: 'sh-' + Date.now(),
+      staff_name: activeUser.name,
+      business_date: correctDay,
+      start_time: new Date().toISOString(),
+      end_time: null,
+      start_cash: carriedStartCash,
+      end_cash: 0,
+      expected_cash: carriedStartCash,
+      status: 'open',
+      total_notah_sales: 0,
+      total_notah_collections: 0
+    };
+    state.shifts.unshift(newShift);
+    state.shiftDays[String(newShift.id)] = correctDay;
+    await dbMutate('shifts', 'insert', newShift);
+  } else {
+    existingOpen.business_date = correctDay;
+    state.shiftDays[String(existingOpen.id)] = correctDay;
+    await dbMutate('shifts', 'update', { business_date: correctDay }, 'id', existingOpen.id);
+  }
+
+  await saveSystemStateKey('arena_shift_days', state.shiftDays);
+
+  const daySel = document.getElementById('dashFilterBusinessDay');
+  if (daySel) daySel.value = 'CURRENT';
+
+  renderAll();
+  showToast(`تم إلغاء يوم (${wrongDay}) نهائياً وفتح يوم (${correctDay}) مكانه ✅`, 'success');
 }
 
 /* ================= 6. SMART PRODUCT SVG ICONS ================= */
@@ -1227,11 +1769,22 @@ function renderPosInterface(mode) {
     gridContainer.innerHTML = filtered
       .map((item) => {
         const qty = Number(cart[item.id] || 0);
+        const hasStock = item.stock !== null && item.stock !== undefined;
+        const stockVal = hasStock ? Number(item.stock) : null;
+        const minStock = Number(item.min_stock ?? 5);
+        const isOut = hasStock && stockVal <= 0;
+        const stockTagHtml = hasStock
+          ? `<span class="pos-tile-stock-tag ${stockVal <= 0 ? 'out' : stockVal <= minStock ? 'low' : 'ok'}">
+              ${stockVal <= 0 ? 'نفذ المخزون (0)' : `المخزون: ${stockVal} ${escapeHtml(item.unit || '')}`}
+            </span>`
+          : '';
+
         return `
-          <div class="pos-tile ${qty > 0 ? 'selected' : ''}" onclick="adjustPosCart('${mode}', '${item.id}', 1)">
+          <div class="pos-tile ${qty > 0 ? 'selected' : ''} ${isOut ? 'out-of-stock' : ''}" onclick="adjustPosCart('${mode}', '${item.id}', 1)">
             <span class="pos-tile-price">${item.price} ج.م</span>
             ${getSmartItemSvg(item)}
             <div class="pos-tile-name">${escapeHtml(item.name)}</div>
+            ${stockTagHtml}
             <div class="pos-tile-qty-bar" onclick="event.stopPropagation()">
               <button type="button" class="tile-qty-btn minus" onclick="adjustPosCart('${mode}', '${item.id}', -1)">-</button>
               <strong>${qty}</strong>
@@ -1286,6 +1839,34 @@ function adjustPosCart(mode, itemId, delta) {
   if (next === 0) delete cart[itemId];
   else cart[itemId] = next;
   renderPosInterface(mode);
+}
+
+async function deductStockForSoldItems(soldItems) {
+  if (!Array.isArray(soldItems) || soldItems.length === 0) return;
+  let changed = false;
+
+  for (const sold of soldItems) {
+    const item = state.menuItems.find(
+      (m) => String(m.id) === String(sold.id) || m.name === sold.name
+    );
+    if (!item) continue;
+    if (item.stock !== null && item.stock !== undefined) {
+      item.stock = Math.max(0, Number(item.stock) - Number(sold.qty || 0));
+      state.menuMeta[String(item.id)] = {
+        ...(state.menuMeta[String(item.id)] || {}),
+        cost: Number(item.cost || 0),
+        stock: item.stock,
+        min_stock: Number(item.min_stock ?? 5),
+        unit: item.unit || 'قطعة'
+      };
+      changed = true;
+      await dbMutate('menu_items', 'update', { stock: item.stock }, 'id', item.id);
+    }
+  }
+
+  if (changed) {
+    await saveSystemStateKey('arena_menu_meta', state.menuMeta);
+  }
 }
 
 async function confirmPosModalOrders() {
@@ -1351,8 +1932,10 @@ function openRoomCheckoutModal(roomId) {
   const lines = [
     { label: `لعب ${room.name} (${s.game} - ${s.mode}) [${formatDuration(m.elapsedSec)}]`, amount: m.timeCost }
   ];
+  const soldItems = [];
   (s.orders || []).forEach((o) => {
     lines.push({ label: `${o.name} × ${o.qty}`, amount: o.price * o.qty });
+    soldItems.push({ id: o.id, name: o.name, price: Number(o.price), qty: Number(o.qty) });
   });
 
   activeCheckoutData = {
@@ -1361,6 +1944,7 @@ function openRoomCheckoutModal(roomId) {
     title: `فاتورة ${room.name}`,
     description: `${room.name} (${s.game} - ${s.mode})${(s.orders || []).length ? ' + ' + s.orders.map((o) => `${o.name} × ${o.qty}`).join('، ') : ''}`,
     lines,
+    soldItems,
     timeCost: m.timeCost,
     ordersCost: m.ordersCost,
     subtotal: m.totalCost,
@@ -1382,9 +1966,11 @@ function openTableCheckoutModal(tableId) {
   }
 
   let subtotal = 0;
+  const soldItems = [];
   const lines = orders.map((o) => {
     const amt = Number(o.price) * Number(o.qty);
     subtotal += amt;
+    soldItems.push({ id: o.id, name: o.name, price: Number(o.price), qty: Number(o.qty) });
     return { label: `${o.name} × ${o.qty}`, amount: amt };
   });
 
@@ -1394,6 +1980,7 @@ function openTableCheckoutModal(tableId) {
     title: `فاتورة ${tbl.name}`,
     description: `${tbl.name} (${lines.map((l) => l.label).join('، ') || 'بدون طلبات'})`,
     lines,
+    soldItems,
     timeCost: 0,
     ordersCost: subtotal,
     subtotal,
@@ -1412,6 +1999,7 @@ function openDirectCafeCheckout() {
   }
 
   const lines = [];
+  const soldItems = [];
   let subtotal = 0;
   entries.forEach(([id, qty]) => {
     const item = state.menuItems.find((m) => String(m.id) === String(id));
@@ -1419,6 +2007,7 @@ function openDirectCafeCheckout() {
     const amt = item.price * qty;
     subtotal += amt;
     lines.push({ label: `${item.name} × ${qty}`, amount: amt });
+    soldItems.push({ id: item.id, name: item.name, price: Number(item.price), qty: Number(qty) });
   });
 
   activeCheckoutData = {
@@ -1427,6 +2016,7 @@ function openDirectCafeCheckout() {
     title: 'فاتورة كافيه / تيك أواي',
     description: `تيك أواي (${lines.map((l) => l.label).join('، ')})`,
     lines,
+    soldItems,
     timeCost: 0,
     ordersCost: subtotal,
     subtotal,
@@ -1562,6 +2152,7 @@ async function finalizeCheckoutAndPrint() {
   }
 
   const openShift = getOpenShift();
+  const businessDate = getShiftBusinessDate(openShift);
   const nowIso = new Date().toISOString();
 
   const payParts = [];
@@ -1572,8 +2163,10 @@ async function finalizeCheckoutAndPrint() {
   const tx = {
     id: 'tx-' + Date.now(),
     shift_id: openShift ? openShift.id : 'unassigned',
+    business_date: businessDate,
     type: activeCheckoutData.contextType,
     description: activeCheckoutData.description,
+    items: activeCheckoutData.soldItems || [],
     time_cost: activeCheckoutData.timeCost,
     orders_cost: activeCheckoutData.ordersCost,
     discount,
@@ -1593,12 +2186,18 @@ async function finalizeCheckoutAndPrint() {
     await dbMutate('transactions', 'insert', tx);
   }
 
+  // Deduct sold items from inventory stock
+  if (activeCheckoutData.soldItems && activeCheckoutData.soldItems.length > 0) {
+    await deductStockForSoldItems(activeCheckoutData.soldItems);
+  }
+
   if (targetClient && notahPaid > 0) {
     targetClient.notah_balance = Number(targetClient.notah_balance || 0) + notahPaid;
     if (!Array.isArray(targetClient.notah_history)) targetClient.notah_history = [];
     targetClient.notah_history.unshift({
       id: 'nh-' + Date.now(),
       date: nowIso,
+      business_date: businessDate,
       entryType: 'debt',
       description: activeCheckoutData.description,
       lines: activeCheckoutData.lines,
@@ -1780,11 +2379,15 @@ async function handleCollectNotahPayment() {
   }
 
   const nowIso = new Date().toISOString();
+  const openShift = getOpenShift();
+  const businessDate = getShiftBusinessDate(openShift);
+
   client.notah_balance = currentDebt - payAmount;
   if (!Array.isArray(client.notah_history)) client.notah_history = [];
   client.notah_history.unshift({
     id: 'nh-' + Date.now(),
     date: nowIso,
+    business_date: businessDate,
     entryType: 'payment',
     amountPaid: payAmount,
     method,
@@ -1803,10 +2406,10 @@ async function handleCollectNotahPayment() {
     client.id
   );
 
-  const openShift = getOpenShift();
   const tx = {
     id: 'tx-' + Date.now(),
     shift_id: openShift.id,
+    business_date: businessDate,
     type: 'notah_collection',
     description: `تحصيل نوتة (حساب آجل من يوم سابق) — العميل: ${client.name}${note ? ` (${note})` : ''}`,
     amount: payAmount,
@@ -1825,7 +2428,7 @@ async function handleCollectNotahPayment() {
 
   renderAll();
   openClientDetailsModal(client.id);
-  showToast(`تم تحصيل ${payAmount} ج.م من ${client.name} وإضافتها لحساب اليوم ✅`, 'success');
+  showToast(`تم تحصيل ${payAmount} ج.م من ${client.name} وإضافتها ليوم (${businessDate}) ✅`, 'success');
 }
 
 /* ================= 13. RESERVATIONS ================= */
@@ -1953,7 +2556,7 @@ async function cancelReservation(resId) {
   showToast('تم إلغاء الحجز', 'warning');
 }
 
-/* ================= 14. SHIFT MANAGEMENT, HANDOVER & WHATSAPP ================= */
+/* ================= 14. SHIFT MANAGEMENT, BUSINESS DAY LOCK & WHATSAPP ================= */
 
 function getOpenShift() {
   return state.shifts.find((s) => s.status === 'open') || null;
@@ -1961,7 +2564,7 @@ function getOpenShift() {
 
 function requireOpenShift() {
   if (!getOpenShift()) {
-    showToast('يجب فتح وردية أولاً من تبويب "الوردية والتسليم"!', 'error');
+    showToast('يجب فتح وردية واختيار اليوم أولاً من تبويب "الوردية والتسليم"!', 'error');
     switchTab('shift');
     return false;
   }
@@ -2034,12 +2637,17 @@ function renderShiftTab() {
     return;
   }
 
+  const bDay = getShiftBusinessDate(shift);
+  const bDayLabel = formatBusinessDateAr(bDay);
+
   badge.className = 'shift-pill open';
-  badgeText.textContent = `الوردية مفتوحة (${shift.staff_name})`;
+  badgeText.textContent = `وردية ${bDay} (${shift.staff_name})`;
   document.getElementById('shiftClosedCard').classList.add('hidden');
   document.getElementById('shiftOpenCard').classList.remove('hidden');
 
   const st = computeShiftStats(shift);
+  document.getElementById('shiftBusinessDateBadge').textContent = bDayLabel;
+  document.getElementById('shiftBusinessDateNote').textContent = bDayLabel;
   document.getElementById('shiftStaffName').textContent = shift.staff_name || '-';
   document.getElementById('shiftStartTime').textContent = formatDateTime(shift.start_time);
   document.getElementById('shiftStartCash').textContent = `${st.startCash} ج.م`;
@@ -2100,12 +2708,31 @@ function renderShiftTab() {
           .join('');
 }
 
+function openOpenShiftModal() {
+  const dateInp = document.getElementById('openShiftBusinessDate');
+  const hintEl = document.getElementById('openShiftDayNameHint');
+  const todayStr = getLocalDateStr();
+  if (dateInp) {
+    dateInp.value = todayStr;
+    if (hintEl) hintEl.textContent = `سيتم تسجيل وتقفيل الوردية بالكامل على: ${formatBusinessDateAr(todayStr)}`;
+  }
+  document.getElementById('openShiftCashInput').value = 0;
+  openModal('modalOpenShift');
+}
+
 async function confirmOpenShift() {
   if (getOpenShift()) return;
+  const businessDate = document.getElementById('openShiftBusinessDate')?.value || '';
+  if (!businessDate) {
+    return showToast('يجب اختيار يوم العمل أولاً قبل فتح الوردية!', 'warning');
+  }
+
   const startCash = Math.max(0, Number(document.getElementById('openShiftCashInput').value || 0));
+  const shiftId = 'sh-' + Date.now();
   const shift = {
-    id: 'sh-' + Date.now(),
+    id: shiftId,
     staff_name: activeUser.name,
+    business_date: businessDate,
     start_time: new Date().toISOString(),
     end_time: null,
     start_cash: startCash,
@@ -2117,10 +2744,13 @@ async function confirmOpenShift() {
   };
 
   state.shifts.unshift(shift);
+  state.shiftDays[String(shiftId)] = businessDate;
   await dbMutate('shifts', 'insert', shift);
+  await saveSystemStateKey('arena_shift_days', state.shiftDays);
+
   closeModal('modalOpenShift');
   renderAll();
-  showToast('تم فتح الوردية بنجاح 🟢', 'success');
+  showToast(`تم فتح الوردية على ${formatBusinessDateAr(businessDate)} 🟢`, 'success');
 }
 
 async function handleAddExpense() {
@@ -2133,6 +2763,7 @@ async function handleAddExpense() {
   const exp = {
     id: 'exp-' + Date.now(),
     shift_id: shift.id,
+    business_date: getShiftBusinessDate(shift),
     title,
     amount,
     staff_name: activeUser.name,
@@ -2156,7 +2787,9 @@ function openHandoverShiftModal() {
   }
 
   const st = computeShiftStats(shift);
+  const bDayLabel = formatBusinessDateAr(getShiftBusinessDate(shift));
   document.getElementById('handoverSummaryPreview').innerHTML = `
+    <div>📅 يوم العمل: <strong>${bDayLabel}</strong></div>
     <div>👤 الموظف المُسلِّم: <strong>${escapeHtml(activeUser.name)}</strong></div>
     <div>🎮 الغرف: <strong>${st.roomsRev} ج</strong> | ☕ الكافيه والترابيزات: <strong>${st.cafeRev} ج</strong></div>
     <div>📒 نوتة اليوم: <strong>${st.notahSales} ج</strong> | ✅ تحصيل نوتة: <strong>${st.notahCollected} ج</strong></div>
@@ -2209,17 +2842,19 @@ async function confirmHandoverShift() {
 
   if (!targetUser) return showToast('اختر الموظف المُستلِم', 'warning');
   if (String(targetUser.pin) !== pin) {
-    return showToast('الرقم السري (PIN) للموظف المُستلِم غير صحيح!', 'error');
+    return showToast('الباسورد / PIN للموظف المُستلِم غير صحيح!', 'error');
   }
 
   const st = computeShiftStats(shift);
   const diff = actualCash - st.expectedDrawer;
   const fromName = activeUser.name;
   const nowIso = new Date().toISOString();
+  const bDay = getShiftBusinessDate(shift);
 
   const handoverRecord = {
     id: 'ho-' + Date.now(),
     shift_id: shift.id,
+    business_date: bDay,
     from_staff: fromName,
     to_staff: targetUser.name,
     time: nowIso,
@@ -2235,21 +2870,18 @@ async function confirmHandoverShift() {
   await saveSystemStateKey('arena_handovers', state.handovers);
   await dbMutate('shifts', 'update', { staff_name: targetUser.name }, 'id', shift.id);
 
-  // Switch active user to incoming employee seamlessly
   activeUser = targetUser;
   sessionStorage.setItem(STORAGE_KEYS.USER, JSON.stringify(targetUser));
   document.getElementById('currentUserBadge').textContent =
     `${activeUser.name} (${activeUser.role === 'admin' ? 'مدير' : 'كاشير'})`;
-  document.querySelectorAll('.admin-only').forEach((el) => {
-    el.classList.toggle('hidden', activeUser.role !== 'admin');
-  });
 
   lastHandoverReportText = [
     `🤝 *إشعار تسليم وردية - ARENA POS*`,
     `━━━━━━━━━━━━━━━━━━`,
+    `📅 *يوم العمل:* ${formatBusinessDateAr(bDay)}`,
     `📤 *المُسلِّم:* ${fromName}`,
     `📥 *المُستلِم:* ${targetUser.name}`,
-    `🕒 *الوقت:* ${formatDateTime(nowIso)}`,
+    `🕒 *الوقت الفعلي:* ${formatDateTime(nowIso)}`,
     `💰 *الكاش المفروض بالدرج:* ${st.expectedDrawer} ج.م`,
     `🧮 *الكاش المُسلَّم فعلياً:* ${actualCash} ج.م`,
     `⚖️ *الفرق:* ${diff === 0 ? 'مظبوط (0 ج)' : `${diff} ج`}`,
@@ -2274,7 +2906,10 @@ function openCloseShiftModal() {
   }
 
   const st = computeShiftStats(shift);
+  const bDayLabel = formatBusinessDateAr(getShiftBusinessDate(shift));
+
   document.getElementById('closeShiftSummaryPreview').innerHTML = `
+    <div style="color:var(--ps-cyan);font-weight:800;">📅 يوم العمل: ${bDayLabel}</div>
     <div>👤 الكاشير: <strong>${escapeHtml(shift.staff_name)}</strong></div>
     <div>💵 رصيد بداية الدرج: <strong>${st.startCash} ج.م</strong></div>
     <div>🎮 إيراد الغرف: <strong>${st.roomsRev} ج.م</strong> | ☕ الترابيزات والكافيه: <strong>${st.cafeRev} ج.م</strong></div>
@@ -2320,8 +2955,10 @@ async function confirmCloseShift() {
   const actualCash = Number(document.getElementById('closeShiftActualCash').value || 0);
   const diff = actualCash - st.expectedDrawer;
   const endTime = new Date().toISOString();
+  const bDay = getShiftBusinessDate(shift);
 
   shift.status = 'closed';
+  shift.business_date = bDay;
   shift.end_time = endTime;
   shift.end_cash = actualCash;
   shift.expected_cash = st.expectedDrawer;
@@ -2333,6 +2970,7 @@ async function confirmCloseShift() {
     'update',
     {
       status: 'closed',
+      business_date: bDay,
       end_time: endTime,
       end_cash: actualCash,
       expected_cash: st.expectedDrawer,
@@ -2348,10 +2986,11 @@ async function confirmCloseShift() {
   document.getElementById('preCloseInputBox').classList.add('hidden');
   document.getElementById('postCloseActionsBox').classList.remove('hidden');
   renderAll();
-  showToast('تم تقفيل الوردية بنجاح ✅', 'success');
+  showToast(`تم تقفيل الوردية وحفظ التقرير على ${formatBusinessDateAr(bDay)} ✅`, 'success');
 }
 
 function buildWhatsAppShiftReportText(shift, st, actualCash, diff) {
+  const bDay = getShiftBusinessDate(shift);
   const diffLabel = diff === 0 ? 'مظبوط (0 ج)' : diff > 0 ? `زيادة (+${diff} ج)` : `عجز (${diff} ج)`;
   const notahListLine =
     st.notahClientsToday.length > 0 ? `\n   └ العملاء: ${st.notahClientsToday.join(' | ')}` : '';
@@ -2363,6 +3002,7 @@ function buildWhatsAppShiftReportText(shift, st, actualCash, diff) {
   return [
     `📊 *تقرير تقفيل الوردية - ARENA POS*`,
     `━━━━━━━━━━━━━━━━━━`,
+    `📅 *يوم العمل:* ${formatBusinessDateAr(bDay)}`,
     `👤 *الكاشير:* ${shift.staff_name}`,
     `🕒 *من:* ${formatDateTime(shift.start_time)}`,
     `🕒 *إلى:* ${formatDateTime(shift.end_time || new Date().toISOString())}${handoverLine}`,
@@ -2388,23 +3028,63 @@ function sendReportToWhatsApp(customText = null) {
   window.open(`https://wa.me/${phone}?text=${encodeURIComponent(msg)}`, '_blank');
 }
 
-/* ================= 15. REPORTS (ADMIN) ================= */
+/* ================= 15. REPORTS (MANAGEMENT PROTECTED) ================= */
+
+function populateReportFilters() {
+  const roomSel = document.getElementById('reportFilterRoom');
+  if (roomSel) {
+    const prev = roomSel.value || 'ALL';
+    roomSel.innerHTML =
+      `<option value="ALL">الكل</option>` +
+      `<option value="ROOMS_ONLY">الغرف فقط</option>` +
+      `<option value="CAFE_ONLY">الترابيزات والتيك أواي فقط</option>` +
+      state.rooms.map((r) => `<option value="room:${escapeAttr(r.name)}">🎮 ${escapeHtml(r.name)}</option>`).join('') +
+      state.tables.map((t) => `<option value="table:${escapeAttr(t.name)}">🪑 ${escapeHtml(t.name)}</option>`).join('');
+    if ([...roomSel.options].some((o) => o.value === prev)) roomSel.value = prev;
+  }
+
+  const itemSel = document.getElementById('reportFilterItem');
+  if (itemSel) {
+    const prev = itemSel.value || 'ALL';
+    itemSel.innerHTML =
+      `<option value="ALL">كل الأصناف</option>` +
+      state.menuItems.map((m) => `<option value="${escapeAttr(m.name)}">☕ ${escapeHtml(m.name)}</option>`).join('');
+    if ([...itemSel.options].some((o) => o.value === prev)) itemSel.value = prev;
+  }
+}
 
 function renderReports() {
+  if (!isMgmtUnlocked) return;
+  populateReportFilters();
+
   const fromStr = document.getElementById('reportDateFrom')?.value || '';
   const toStr = document.getElementById('reportDateTo')?.value || '';
-
-  const fromMs = fromStr ? new Date(fromStr + 'T00:00:00').getTime() : 0;
-  const toMs = toStr ? new Date(toStr + 'T23:59:59').getTime() : Infinity;
+  const roomFilter = document.getElementById('reportFilterRoom')?.value || 'ALL';
+  const itemFilter = document.getElementById('reportFilterItem')?.value || 'ALL';
 
   const txs = state.transactions.filter((t) => {
-    const ms = new Date(t.created_at).getTime();
-    return ms >= fromMs && ms <= toMs;
+    const bDay = getTxBusinessDate(t);
+    if (fromStr && bDay < fromStr) return false;
+    if (toStr && bDay > toStr) return false;
+
+    if (roomFilter === 'ROOMS_ONLY' && t.type !== 'room') return false;
+    if (roomFilter === 'CAFE_ONLY' && t.type !== 'cafe' && t.type !== 'table') return false;
+    if (roomFilter.startsWith('room:') && (t.type !== 'room' || !(t.description || '').startsWith(roomFilter.slice(5)))) return false;
+    if (roomFilter.startsWith('table:') && (t.type !== 'table' || !(t.description || '').startsWith(roomFilter.slice(6)))) return false;
+
+    if (itemFilter !== 'ALL') {
+      const items = extractTxItems(t);
+      if (!items.some((it) => it.name === itemFilter)) return false;
+    }
+
+    return true;
   });
 
   const exps = state.expenses.filter((e) => {
-    const ms = new Date(e.created_at).getTime();
-    return ms >= fromMs && ms <= toMs;
+    const bDay = getExpBusinessDate(e);
+    if (fromStr && bDay < fromStr) return false;
+    if (toStr && bDay > toStr) return false;
+    return true;
   });
 
   let roomsRev = 0;
@@ -2437,7 +3117,7 @@ function renderReports() {
           .map(
             (t) => `
           <tr>
-            <td>${formatDateTime(t.created_at)}</td>
+            <td><span style="color:var(--ps-cyan);font-weight:700">${getTxBusinessDate(t)}</span> • ${formatTimeShort(t.created_at)}</td>
             <td><strong>${escapeHtml(t.description)}</strong></td>
             <td><strong>${t.amount} ج.م</strong></td>
             <td>${escapeHtml(t.payment_summary || '')}</td>
@@ -2448,47 +3128,63 @@ function renderReports() {
           .join('');
 }
 
-/* ================= 16. SETTINGS, RECEIPT DESIGNER & PRINT ================= */
+/* ================= 16. SETTINGS: RECEIPT DESIGNER (80mm/58mm), USERS, MENU & INVENTORY ================= */
 
 function renderSettings() {
+  if (!isMgmtUnlocked) return;
+
+  document.getElementById('setReceiptPaperSize').value = state.settings.receiptPaperSize || '80mm';
+  document.getElementById('setReceiptFontSize').value = state.settings.receiptFontSize || 'normal';
   document.getElementById('setReceiptHeader').value = state.settings.receiptHeader || '';
   document.getElementById('setReceiptFooter').value = state.settings.receiptFooter || '';
   document.getElementById('setOwnerWhatsapp').value = state.settings.ownerWhatsapp || '';
   updateReceiptPreview();
 
+  // Users List (with Edit Password/PIN & Delete)
   document.getElementById('settingsUsersList').innerHTML = state.users
     .map(
       (u) => `
       <div class="mini-list-item">
-        <span><strong>${escapeHtml(u.name)}</strong> (${u.role === 'admin' ? 'مدير' : 'كاشير'}) — PIN: <code>${escapeHtml(u.pin)}</code></span>
-        ${u.id !== 'admin-default' ? `<button class="btn btn-danger btn-xs" onclick="deleteUser('${u.id}')">حذف</button>` : ''}
+        <span>
+          <strong>${escapeHtml(u.name)}</strong> (${u.role === 'admin' ? 'مدير' : 'كاشير'}) — الباسورد/PIN: <code>${escapeHtml(u.pin)}</code>
+        </span>
+        <div class="btn-row">
+          <button type="button" class="btn btn-outline btn-xs" onclick="editUserForm('${u.id}')">✏️ تعديل / تغيير باسورد</button>
+          ${u.id !== 'admin-default' ? `<button type="button" class="btn btn-danger btn-xs" onclick="deleteUser('${u.id}')">حذف</button>` : ''}
+        </div>
       </div>
     `
     )
     .join('');
 
+  // Rooms List (with Edit & Delete)
   document.getElementById('settingsRoomsList').innerHTML = state.rooms
     .map(
       (r) => `
       <div class="mini-list-item">
         <span><strong>${escapeHtml(r.name)}</strong> (${r.type}) — Single: ${r.single_rate} ج | Multi: ${r.multi_rate} ج</span>
-        <button class="btn btn-danger btn-xs" onclick="deleteRoom('${r.id}')">حذف</button>
+        <div class="btn-row">
+          <button type="button" class="btn btn-outline btn-xs" onclick="editRoomForm('${r.id}')">✏️ تعديل</button>
+          <button type="button" class="btn btn-danger btn-xs" onclick="deleteRoom('${r.id}')">حذف</button>
+        </div>
       </div>
     `
     )
     .join('');
 
+  // Tables List
   document.getElementById('settingsTablesList').innerHTML = state.tables
     .map(
       (t) => `
       <div class="mini-list-item">
         <span>🪑 <strong>${escapeHtml(t.name)}</strong></span>
-        <button class="btn btn-danger btn-xs" onclick="deleteTable('${t.id}')">حذف</button>
+        <button type="button" class="btn btn-danger btn-xs" onclick="deleteTable('${t.id}')">حذف</button>
       </div>
     `
     )
     .join('');
 
+  // Games List
   document.getElementById('settingsGamesList').innerHTML = state.games
     .map(
       (g) => `
@@ -2500,16 +3196,152 @@ function renderSettings() {
     )
     .join('');
 
-  document.getElementById('settingsMenuList').innerHTML = state.menuItems
-    .map(
-      (m) => `
-      <div class="mini-list-item">
-        <span><strong>${escapeHtml(m.name)}</strong> [${escapeHtml(m.category)}] — ${m.price} ج.م</span>
-        <button class="btn btn-danger btn-xs" onclick="deleteMenuItem('${m.id}')">حذف</button>
-      </div>
-    `
-    )
+  // Full Menu & Inventory List
+  renderSettingsMenuList();
+}
+
+function renderSettingsMenuList() {
+  const listEl = document.getElementById('settingsMenuList');
+  if (!listEl) return;
+
+  const q = (document.getElementById('settingsMenuSearch')?.value || '').trim().toLowerCase();
+  const filtered = state.menuItems.filter(
+    (m) =>
+      !q ||
+      (m.name || '').toLowerCase().includes(q) ||
+      (m.category || '').toLowerCase().includes(q)
+  );
+
+  if (filtered.length === 0) {
+    listEl.innerHTML = `<p class="hint-text">لا توجد أصناف مطابقة</p>`;
+    return;
+  }
+
+  listEl.innerHTML = filtered
+    .map((m) => {
+      const hasStock = m.stock !== null && m.stock !== undefined;
+      const stockNum = hasStock ? Number(m.stock) : 0;
+      const minStock = Number(m.min_stock ?? 5);
+      const isLow = hasStock && stockNum <= minStock;
+      const costNum = Number(m.cost || 0);
+      const profit = Number(m.price || 0) - costNum;
+
+      return `
+        <div class="mini-list-item">
+          <div>
+            <strong>${escapeHtml(m.name)}</strong> <span style="color:var(--ps-cyan)">[${escapeHtml(m.category)}]</span>
+            <div style="font-size:0.78rem;color:var(--text-muted);margin-top:2px;">
+              سعر البيع: <strong style="color:var(--success)">${m.price} ج</strong>
+              ${costNum > 0 ? ` | التكلفة: <strong>${costNum} ج</strong> | الربح: <strong style="color:var(--ps-cyan)">${profit} ج</strong>` : ''}
+            </div>
+          </div>
+          <div class="btn-row" style="align-items:center;">
+            <div class="stock-quick-controls" title="تعديل رصيد المخزون سريعاً">
+              <span style="font-size:0.78rem;color:${isLow ? 'var(--danger)' : 'var(--text-muted)'};font-weight:700;">
+                مخزون: ${hasStock ? `${stockNum} ${escapeHtml(m.unit || 'قطعة')}` : 'غير محدد'}
+              </span>
+              <button type="button" class="tile-qty-btn minus" style="width:20px;height:20px;font-size:0.85rem" onclick="adjustMenuStock('${m.id}', -1)">-</button>
+              <button type="button" class="tile-qty-btn plus" style="width:20px;height:20px;font-size:0.85rem" onclick="adjustMenuStock('${m.id}', 1)">+</button>
+            </div>
+            <button type="button" class="btn btn-outline btn-xs" onclick="editMenuItemForm('${m.id}')">✏️ تعديل</button>
+            <button type="button" class="btn btn-danger btn-xs" onclick="deleteMenuItem('${m.id}')">حذف</button>
+          </div>
+        </div>
+      `;
+    })
     .join('');
+}
+
+window.adjustMenuStock = async (id, delta) => {
+  const item = state.menuItems.find((m) => String(m.id) === String(id));
+  if (!item) return;
+  const current = item.stock !== null && item.stock !== undefined ? Number(item.stock) : 0;
+  item.stock = Math.max(0, current + delta);
+  state.menuMeta[String(item.id)] = {
+    ...(state.menuMeta[String(item.id)] || {}),
+    cost: Number(item.cost || 0),
+    stock: item.stock,
+    min_stock: Number(item.min_stock ?? 5),
+    unit: item.unit || 'قطعة'
+  };
+  await dbMutate('menu_items', 'update', { stock: item.stock }, 'id', item.id);
+  await saveSystemStateKey('arena_menu_meta', state.menuMeta);
+  renderSettingsMenuList();
+  renderDirectCafePos();
+};
+
+window.editMenuItemForm = (id) => {
+  const item = state.menuItems.find((m) => String(m.id) === String(id));
+  if (!item) return;
+  document.getElementById('setEditMenuId').value = item.id;
+  document.getElementById('setMenuName').value = item.name || '';
+  document.getElementById('setMenuCategory').value = item.category || 'قهوة';
+  document.getElementById('setMenuPrice').value = item.price ?? '';
+  document.getElementById('setMenuCost').value = item.cost ?? '';
+  document.getElementById('setMenuStock').value = item.stock !== null && item.stock !== undefined ? item.stock : '';
+  document.getElementById('setMenuMinStock').value = item.min_stock ?? 5;
+  document.getElementById('setMenuUnit').value = item.unit || 'قطعة';
+  document.getElementById('setMenuIcon').value = item.icon || 'auto';
+
+  document.getElementById('btnAddMenuItem').textContent = '💾 حفظ تعديل الصنف والمخزون';
+  document.getElementById('btnCancelEditMenu').classList.remove('hidden');
+  document.getElementById('setMenuName').focus();
+};
+
+function resetMenuForm() {
+  document.getElementById('setEditMenuId').value = '';
+  document.getElementById('setMenuName').value = '';
+  document.getElementById('setMenuPrice').value = '';
+  document.getElementById('setMenuCost').value = '';
+  document.getElementById('setMenuStock').value = '';
+  document.getElementById('setMenuMinStock').value = 5;
+  document.getElementById('setMenuUnit').value = 'قطعة';
+  document.getElementById('setMenuIcon').value = 'auto';
+  document.getElementById('btnAddMenuItem').textContent = '➕ إضافة صنف للمنيو والمخزون';
+  document.getElementById('btnCancelEditMenu').classList.add('hidden');
+}
+
+window.editUserForm = (id) => {
+  const u = state.users.find((x) => String(x.id) === String(id));
+  if (!u) return;
+  document.getElementById('setEditUserId').value = u.id;
+  document.getElementById('setUserName').value = u.name || '';
+  document.getElementById('setUserPin').value = u.pin || '';
+  document.getElementById('setUserRole').value = u.role || 'staff';
+  document.getElementById('btnAddUser').textContent = '💾 حفظ تعديل اليوزر';
+  document.getElementById('btnCancelEditUser').classList.remove('hidden');
+  document.getElementById('setUserName').focus();
+};
+
+function resetUserForm() {
+  document.getElementById('setEditUserId').value = '';
+  document.getElementById('setUserName').value = '';
+  document.getElementById('setUserPin').value = '';
+  document.getElementById('setUserRole').value = 'staff';
+  document.getElementById('btnAddUser').textContent = '➕ إضافة يوزر جديد';
+  document.getElementById('btnCancelEditUser').classList.add('hidden');
+}
+
+window.editRoomForm = (id) => {
+  const r = state.rooms.find((x) => String(x.id) === String(id));
+  if (!r) return;
+  document.getElementById('setEditRoomId').value = r.id;
+  document.getElementById('setRoomName').value = r.name || '';
+  document.getElementById('setRoomType').value = r.type || 'PS5';
+  document.getElementById('setRoomSingleRate').value = r.single_rate ?? 50;
+  document.getElementById('setRoomMultiRate').value = r.multi_rate ?? 70;
+  document.getElementById('btnAddRoom').textContent = '💾 حفظ تعديل الغرفة';
+  document.getElementById('btnCancelEditRoom').classList.remove('hidden');
+  document.getElementById('setRoomName').focus();
+};
+
+function resetRoomForm() {
+  document.getElementById('setEditRoomId').value = '';
+  document.getElementById('setRoomName').value = '';
+  document.getElementById('setRoomSingleRate').value = '';
+  document.getElementById('setRoomMultiRate').value = '';
+  document.getElementById('btnAddRoom').textContent = '➕ إضافة / حفظ غرفة';
+  document.getElementById('btnCancelEditRoom').classList.add('hidden');
 }
 
 function handleLogoUpload(event) {
@@ -2521,7 +3353,7 @@ function handleLogoUpload(event) {
     const img = new Image();
     img.onload = () => {
       const canvas = document.createElement('canvas');
-      const maxW = 260;
+      const maxW = 240;
       const scale = Math.min(1, maxW / img.width);
       canvas.width = img.width * scale;
       canvas.height = img.height * scale;
@@ -2534,6 +3366,16 @@ function handleLogoUpload(event) {
     img.src = e.target.result;
   };
   reader.readAsDataURL(file);
+}
+
+function applyReceiptPaperClasses(el) {
+  if (!el) return;
+  const paperSize = document.getElementById('setReceiptPaperSize')?.value || state.settings.receiptPaperSize || '80mm';
+  const fontSize = document.getElementById('setReceiptFontSize')?.value || state.settings.receiptFontSize || 'normal';
+
+  el.classList.remove('receipt-80mm', 'receipt-58mm', 'receipt-font-normal', 'receipt-font-large', 'receipt-font-compact');
+  el.classList.add(paperSize === '58mm' ? 'receipt-58mm' : 'receipt-80mm');
+  el.classList.add(`receipt-font-${fontSize}`);
 }
 
 function buildReceiptHtml(sampleTx = null, sampleLines = null) {
@@ -2554,13 +3396,16 @@ function buildReceiptHtml(sampleTx = null, sampleLines = null) {
   ];
   const total = sampleTx ? sampleTx.amount : 110;
   const dateStr = formatDateTime(sampleTx ? sampleTx.created_at : new Date().toISOString());
+  const bDayStr = sampleTx ? getTxBusinessDate(sampleTx) : getShiftBusinessDate(getOpenShift());
   const payStr = sampleTx ? sampleTx.payment_summary : 'كاش: 110 ج';
+  const cashierStr = sampleTx ? sampleTx.staff_name : (activeUser?.name || 'كاشير');
 
   return `
     ${logoHtml}
     <div class="receipt-header-text">${headerText}</div>
     <div class="receipt-divider"></div>
-    <div style="font-size:10px;">التاريخ: ${dateStr}</div>
+    <div style="font-size:10px;">يوم العمل: ${bDayStr} | ${dateStr}</div>
+    <div style="font-size:10px;">الكاشير: ${escapeHtml(cashierStr)}</div>
     <div class="receipt-divider"></div>
     ${lines
       .map((l) => `<div class="receipt-row"><span>${escapeHtml(l.label)}</span><strong>${l.amount} ج</strong></div>`)
@@ -2575,12 +3420,19 @@ function buildReceiptHtml(sampleTx = null, sampleLines = null) {
 
 function updateReceiptPreview() {
   const box = document.getElementById('receiptLivePreview');
-  if (box) box.innerHTML = buildReceiptHtml();
+  const sizeTag = document.getElementById('previewPaperSizeTag');
+  const paperSize = document.getElementById('setReceiptPaperSize')?.value || state.settings.receiptPaperSize || '80mm';
+  if (sizeTag) sizeTag.textContent = paperSize;
+  if (box) {
+    applyReceiptPaperClasses(box);
+    box.innerHTML = buildReceiptHtml();
+  }
 }
 
 function printReceipt(tx, lines) {
   const printBox = document.getElementById('receiptPrintContent');
   if (!printBox) return;
+  applyReceiptPaperClasses(printBox);
   printBox.innerHTML = buildReceiptHtml(tx, lines);
   setTimeout(() => window.print(), 150);
 }
@@ -2588,14 +3440,14 @@ function printReceipt(tx, lines) {
 /* ================= 17. RENDER ALL & EVENT BINDINGS ================= */
 
 function renderAll() {
-  renderDashboard();
   renderRooms();
   renderTables();
   renderDirectCafePos();
   renderReservationsTab();
   renderClientsTab();
   renderShiftTab();
-  if (activeUser?.role === 'admin') {
+  if (isMgmtUnlocked) {
+    renderDashboard();
     renderReports();
     renderSettings();
   }
@@ -2663,6 +3515,7 @@ function bindEvents() {
     localStorage.setItem(STORAGE_KEYS.KEY, k);
     initSupabase(u, k);
     await syncAllDataFromCloud();
+    populateLoginUserSelect();
     showScreen('loginScreen');
   });
 
@@ -2671,7 +3524,7 @@ function bindEvents() {
       const k = btn.dataset.key;
       const inp = document.getElementById('loginPin');
       if (k === 'C') inp.value = '';
-      else if (inp.value.length < 8) inp.value += k;
+      else if (inp.value.length < 20) inp.value += k;
     });
   });
   document.getElementById('btnLogin')?.addEventListener('click', handleLogin);
@@ -2681,7 +3534,9 @@ function bindEvents() {
 
   document.getElementById('btnLogout')?.addEventListener('click', () => {
     activeUser = null;
+    isMgmtUnlocked = false;
     sessionStorage.removeItem(STORAGE_KEYS.USER);
+    populateLoginUserSelect();
     showScreen('loginScreen');
   });
 
@@ -2690,6 +3545,32 @@ function bindEvents() {
   document.querySelectorAll('.nav-tab').forEach((btn) => {
     btn.addEventListener('click', () => switchTab(btn.dataset.tab));
   });
+
+  // Management Password Unlock / Lock
+  document.getElementById('btnUnlockMgmt')?.addEventListener('click', verifyMgmtPassword);
+  document.getElementById('mgmtPasswordInput')?.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') verifyMgmtPassword();
+  });
+  document.getElementById('btnLockMgmt')?.addEventListener('click', lockMgmtPanel);
+
+  // Dashboard Sales Analytics Filters
+  document.getElementById('btnApplyDashFilter')?.addEventListener('click', renderDashboard);
+  document.getElementById('dashFilterBusinessDay')?.addEventListener('change', renderDashboard);
+  document.getElementById('dashFilterRoom')?.addEventListener('change', renderDashboard);
+  document.getElementById('dashFilterDrink')?.addEventListener('change', renderDashboard);
+  document.getElementById('dashFilterCashier')?.addEventListener('change', renderDashboard);
+  document.getElementById('btnResetDashFilter')?.addEventListener('click', () => {
+    document.getElementById('dashFilterBusinessDay').value = 'CURRENT';
+    document.getElementById('dashFilterDateFrom').value = '';
+    document.getElementById('dashFilterDateTo').value = '';
+    document.getElementById('dashFilterRoom').value = 'ALL';
+    document.getElementById('dashFilterDrink').value = 'ALL';
+    document.getElementById('dashFilterCashier').value = 'ALL';
+    renderDashboard();
+  });
+
+  // Dashboard Fix Wrong Business Day
+  document.getElementById('btnFixWrongBusinessDay')?.addEventListener('click', handleFixWrongBusinessDay);
 
   // Start Room & Table Modals
   document.getElementById('startModeSingle')?.addEventListener('click', () => {
@@ -2755,8 +3636,14 @@ function bindEvents() {
   document.getElementById('btnAddReservation')?.addEventListener('click', handleAddReservation);
   document.getElementById('resFilterStatus')?.addEventListener('change', renderReservationsTab);
 
-  // Shift, Handover & Close
-  document.getElementById('btnShowOpenShift')?.addEventListener('click', () => openModal('modalOpenShift'));
+  // Shift, Business Day Picker, Handover & Close
+  document.getElementById('btnShowOpenShift')?.addEventListener('click', openOpenShiftModal);
+  document.getElementById('openShiftBusinessDate')?.addEventListener('change', (e) => {
+    const hintEl = document.getElementById('openShiftDayNameHint');
+    if (hintEl && e.target.value) {
+      hintEl.textContent = `سيتم تسجيل وتقفيل الوردية بالكامل على: ${formatBusinessDateAr(e.target.value)}`;
+    }
+  });
   document.getElementById('btnConfirmOpenShift')?.addEventListener('click', confirmOpenShift);
   document.getElementById('btnAddExpense')?.addEventListener('click', handleAddExpense);
 
@@ -2777,19 +3664,38 @@ function bindEvents() {
   // Reports Filter
   document.getElementById('btnFilterReports')?.addEventListener('click', renderReports);
 
-  // Settings: Receipt Designer
+  // Settings: Receipt Designer (80mm / 58mm)
   document.getElementById('setReceiptLogoInput')?.addEventListener('change', handleLogoUpload);
   document.getElementById('btnRemoveReceiptLogo')?.addEventListener('click', () => {
     state.settings.receiptLogo = '';
     updateReceiptPreview();
   });
+  document.getElementById('setReceiptPaperSize')?.addEventListener('change', updateReceiptPreview);
+  document.getElementById('setReceiptFontSize')?.addEventListener('change', updateReceiptPreview);
   document.getElementById('setReceiptHeader')?.addEventListener('input', updateReceiptPreview);
   document.getElementById('setReceiptFooter')?.addEventListener('input', updateReceiptPreview);
   document.getElementById('btnSaveReceiptSettings')?.addEventListener('click', async () => {
+    state.settings.receiptPaperSize = document.getElementById('setReceiptPaperSize').value;
+    state.settings.receiptFontSize = document.getElementById('setReceiptFontSize').value;
     state.settings.receiptHeader = document.getElementById('setReceiptHeader').value;
     state.settings.receiptFooter = document.getElementById('setReceiptFooter').value;
     await saveSystemStateKey('arena_settings', state.settings);
-    showToast('تم حفظ تصميم الفاتورة وتطبيقه على كل الأجهزة ✅', 'success');
+    updateReceiptPreview();
+    showToast('تم حفظ تصميم الفاتورة بمقاس الريسيت وتطبيقه على كل الأجهزة ✅', 'success');
+  });
+
+  // Settings: Management Password
+  document.getElementById('btnSaveMgmtPass')?.addEventListener('click', async () => {
+    const p1 = document.getElementById('setMgmtNewPass').value.trim();
+    const p2 = document.getElementById('setMgmtConfirmPass').value.trim();
+    if (!p1) return showToast('أدخل باسورد الإدارة الجديد', 'warning');
+    if (p1 !== p2) return showToast('الباسورد غير متطابق!', 'error');
+
+    state.settings.mgmtPassword = p1;
+    await saveSystemStateKey('arena_settings', state.settings);
+    document.getElementById('setMgmtNewPass').value = '';
+    document.getElementById('setMgmtConfirmPass').value = '';
+    showToast('تم تحديث باسورد الإدارة بنجاح 🔐', 'success');
   });
 
   // Settings: WhatsApp
@@ -2803,52 +3709,79 @@ function bindEvents() {
     sendReportToWhatsApp('✅ رسالة تجريبية من سيستم ARENA POS - الربط مع واتساب المدير يعمل بنجاح!');
   });
 
-  // Settings: Users, Rooms, Tables, Games, Menu
+  // Settings: Users (Add & Edit Password/PIN)
   document.getElementById('btnAddUser')?.addEventListener('click', async () => {
+    const editId = document.getElementById('setEditUserId').value;
     const name = document.getElementById('setUserName').value.trim();
     const pin = document.getElementById('setUserPin').value.trim();
     const role = document.getElementById('setUserRole').value;
-    if (!name || !pin) return showToast('أدخل الاسم والرقم السري', 'warning');
+    if (!name || !pin) return showToast('أدخل الاسم والباسورد / PIN', 'warning');
 
-    const existing = state.users.find((u) => String(u.pin) === pin);
-    if (existing) {
-      existing.name = name;
-      existing.role = role;
-      await dbMutate('users', 'update', { name, role }, 'id', existing.id);
+    if (editId) {
+      const target = state.users.find((u) => String(u.id) === String(editId));
+      if (target) {
+        target.name = name;
+        target.pin = pin;
+        target.role = role;
+        await dbMutate('users', 'update', { name, pin, role }, 'id', target.id);
+      }
+      resetUserForm();
     } else {
+      const duplicate = state.users.find((u) => String(u.pin) === pin);
+      if (duplicate) {
+        return showToast(`هذا الباسورد مستخدم بالفعل للموظف "${duplicate.name}"`, 'error');
+      }
       const u = { id: 'usr-' + Date.now(), name, pin, role };
       state.users.push(u);
       await dbMutate('users', 'insert', u);
+      resetUserForm();
     }
-    document.getElementById('setUserName').value = '';
-    document.getElementById('setUserPin').value = '';
-    renderSettings();
-    showToast('تم حفظ الحساب ✅', 'success');
-  });
 
+    populateLoginUserSelect();
+    renderSettings();
+    showToast('تم حفظ بيانات اليوزر والباسورد ✅', 'success');
+  });
+  document.getElementById('btnCancelEditUser')?.addEventListener('click', resetUserForm);
+
+  // Settings: Rooms (Add & Edit)
   document.getElementById('btnAddRoom')?.addEventListener('click', async () => {
+    const editId = document.getElementById('setEditRoomId').value;
     const name = document.getElementById('setRoomName').value.trim();
     const type = document.getElementById('setRoomType').value;
     const single_rate = Number(document.getElementById('setRoomSingleRate').value || 50);
     const multi_rate = Number(document.getElementById('setRoomMultiRate').value || 70);
     if (!name) return showToast('أدخل اسم الغرفة', 'warning');
 
-    const room = {
-      id: String(Date.now()),
-      name,
-      type,
-      single_rate,
-      multi_rate,
-      status: 'idle',
-      session: null
-    };
-    state.rooms.push(room);
-    await dbMutate('rooms', 'insert', room);
-    document.getElementById('setRoomName').value = '';
+    if (editId) {
+      const room = state.rooms.find((r) => String(r.id) === String(editId));
+      if (room) {
+        room.name = name;
+        room.type = type;
+        room.single_rate = single_rate;
+        room.multi_rate = multi_rate;
+        await dbMutate('rooms', 'update', { name, type, single_rate, multi_rate }, 'id', room.id);
+      }
+      resetRoomForm();
+    } else {
+      const room = {
+        id: String(Date.now()),
+        name,
+        type,
+        single_rate,
+        multi_rate,
+        status: 'idle',
+        session: null
+      };
+      state.rooms.push(room);
+      await dbMutate('rooms', 'insert', room);
+      resetRoomForm();
+    }
     renderAll();
-    showToast('تمت إضافة الغرفة ✅', 'success');
+    showToast('تم حفظ الغرفة بنجاح ✅', 'success');
   });
+  document.getElementById('btnCancelEditRoom')?.addEventListener('click', resetRoomForm);
 
+  // Settings: Tables
   document.getElementById('btnAddTable')?.addEventListener('click', async () => {
     const name = document.getElementById('setTableName').value.trim();
     if (!name) return showToast('أدخل اسم أو رقم الترابيزة', 'warning');
@@ -2865,6 +3798,7 @@ function bindEvents() {
     showToast('تمت إضافة الترابيزة ✅', 'success');
   });
 
+  // Settings: Games
   document.getElementById('btnAddGame')?.addEventListener('click', async () => {
     const name = document.getElementById('setGameName').value.trim();
     if (!name) return;
@@ -2877,20 +3811,57 @@ function bindEvents() {
     showToast('تمت إضافة اللعبة ✅', 'success');
   });
 
+  // Settings: Menu & Inventory (Add & Edit)
+  document.getElementById('settingsMenuSearch')?.addEventListener('input', renderSettingsMenuList);
+  document.getElementById('btnCancelEditMenu')?.addEventListener('click', resetMenuForm);
   document.getElementById('btnAddMenuItem')?.addEventListener('click', async () => {
+    const editId = document.getElementById('setEditMenuId').value;
     const name = document.getElementById('setMenuName').value.trim();
     const category = document.getElementById('setMenuCategory').value;
     const price = Number(document.getElementById('setMenuPrice').value || 0);
+    const cost = Number(document.getElementById('setMenuCost').value || 0);
+    const stockRaw = document.getElementById('setMenuStock').value;
+    const stock = stockRaw !== '' ? Math.max(0, Number(stockRaw)) : null;
+    const min_stock = Math.max(0, Number(document.getElementById('setMenuMinStock').value || 5));
+    const unit = document.getElementById('setMenuUnit').value.trim() || 'قطعة';
     const icon = document.getElementById('setMenuIcon').value;
-    if (!name || price <= 0) return showToast('أدخل اسم الصنف والسعر', 'warning');
 
-    const item = { id: 'mn-' + Date.now(), name, category, price, icon };
-    state.menuItems.push(item);
-    await dbMutate('menu_items', 'insert', item);
-    document.getElementById('setMenuName').value = '';
-    document.getElementById('setMenuPrice').value = '';
+    if (!name || price <= 0) return showToast('أدخل اسم الصنف وسعر البيع', 'warning');
+
+    if (editId) {
+      const item = state.menuItems.find((m) => String(m.id) === String(editId));
+      if (item) {
+        item.name = name;
+        item.category = category;
+        item.price = price;
+        item.cost = cost;
+        item.stock = stock;
+        item.min_stock = min_stock;
+        item.unit = unit;
+        item.icon = icon;
+        state.menuMeta[String(item.id)] = { cost, stock, min_stock, unit };
+        await dbMutate(
+          'menu_items',
+          'update',
+          { name, category, price, cost, stock, min_stock, unit, icon },
+          'id',
+          item.id
+        );
+        await saveSystemStateKey('arena_menu_meta', state.menuMeta);
+      }
+      resetMenuForm();
+    } else {
+      const itemId = 'mn-' + Date.now();
+      const item = { id: itemId, name, category, price, cost, stock, min_stock, unit, icon };
+      state.menuItems.push(item);
+      state.menuMeta[String(itemId)] = { cost, stock, min_stock, unit };
+      await dbMutate('menu_items', 'insert', item);
+      await saveSystemStateKey('arena_menu_meta', state.menuMeta);
+      resetMenuForm();
+    }
+
     renderAll();
-    showToast('تمت إضافة الصنف للمنيو ✅', 'success');
+    showToast('تم حفظ الصنف وتحديث المخزون ✅', 'success');
   });
 }
 
@@ -2898,6 +3869,7 @@ function bindEvents() {
 window.deleteUser = async (id) => {
   state.users = state.users.filter((u) => String(u.id) !== String(id));
   await dbMutate('users', 'delete', null, 'id', id);
+  populateLoginUserSelect();
   renderSettings();
 };
 
@@ -2921,6 +3893,8 @@ window.deleteGame = async (id) => {
 
 window.deleteMenuItem = async (id) => {
   state.menuItems = state.menuItems.filter((m) => String(m.id) !== String(id));
+  delete state.menuMeta[String(id)];
   await dbMutate('menu_items', 'delete', null, 'id', id);
+  await saveSystemStateKey('arena_menu_meta', state.menuMeta);
   renderAll();
 };
