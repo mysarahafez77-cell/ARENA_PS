@@ -1,5 +1,5 @@
 /* ==========================================================================
-   ARENA POS v5.0 — PlayStation Lounge, Cafe Tables & Direct POS System
+   ARENA POS v5.1 — PlayStation Lounge, Cafe Tables & Direct POS System
    Features:
    - Supabase Live Sync + LocalStorage Cache + Offline Queue
    - Detailed Single & Multi Time/Cost Tracking per Session
@@ -7,7 +7,7 @@
    - Thermal Receipt Printing (80mm / 58mm) with Subtotal, Discount & Breakdown
    - Room Selection Modal when Starting from Reservations
    - Unified Shift & Dashboard Financials + Full Expense Tracking
-   - Management Password Lock & Business Day Correction
+   - Management Password Lock, Business Day Correction & Data Reset Controls
    ========================================================================== */
 
 const STORAGE_KEYS = {
@@ -1005,7 +1005,6 @@ function cancelRoomSession(roomId) {
   if (!room) return;
   if (!confirm(`هل أنت متأكد من إلغاء جلسة ${room.name} بدون حفظ فاتورة؟`)) return;
 
-  // Return stock of any added orders
   (room.orders || []).forEach((o) => adjustMenuStock(o.id, o.qty));
 
   resetRoomObject(room);
@@ -1695,7 +1694,6 @@ function finalizeCheckoutAndPrint() {
   const businessDate = getCurrentBusinessDate();
   const nowIso = new Date().toISOString();
 
-  // Build resolved Notah splits with client names
   const resolvedNotahSplits = notah > 0
     ? state.checkout.notahSplits.map((row) => {
         const client = state.clients.find((c) => c.id === row.clientId);
@@ -1737,7 +1735,6 @@ function finalizeCheckoutAndPrint() {
   state.transactions.unshift(txData);
   queueCloudSync('arena_transactions', 'upsert', txData);
 
-  // Record Notah debt per client
   resolvedNotahSplits.forEach((sp) => {
     const client = state.clients.find((c) => c.id === sp.clientId);
     if (client) {
@@ -1760,7 +1757,6 @@ function finalizeCheckoutAndPrint() {
     queueCloudSync('arena_notah_ledger', 'upsert', ledgerEntry);
   });
 
-  // Reset unit or deduct direct cart stock
   if (state.checkout.type === 'room') {
     const room = state.rooms.find((r) => r.id === state.checkout.targetId);
     if (room) {
@@ -1973,7 +1969,6 @@ function startSessionFromReservation(resId) {
     return;
   }
 
-  // Opens the Start Room modal with the room selector dropdown enabled so user picks the exact room!
   openStartRoomModal(idleRooms[0].id, {
     reservationId: res.id,
     clientName: res.client_name,
@@ -2238,7 +2233,6 @@ function renderShiftTab() {
   $('shiftExpensesTotal').textContent = fmtMoney(stats.expensesTotal);
   $('shiftExpectedDrawer').textContent = fmtMoney(stats.expectedDrawer);
 
-  // Expenses list
   const shiftExps = state.expenses.filter((e) => e.shift_id === active.id || (!e.shift_id && e.business_date === active.business_date));
   $('shiftExpensesList').innerHTML = shiftExps.map((e) => `
     <div class="mini-list-item expense-item">
@@ -2247,7 +2241,6 @@ function renderShiftTab() {
     </div>
   `).join('') || '<p class="hint-text">لا توجد مصروفات مسجلة في هذه الوردية</p>';
 
-  // Handovers list
   const shiftHandovers = state.handovers.filter((h) => h.shift_id === active.id);
   $('shiftHandoversList').innerHTML = shiftHandovers.map((h) => `
     <div class="mini-list-item">
@@ -2256,7 +2249,6 @@ function renderShiftTab() {
     </div>
   `).join('') || '<p class="hint-text">لا توجد تسليمات داخلية في هذه الوردية</p>';
 
-  // Unified Transactions + Expenses chronological feed
   const shiftTxs = state.transactions.filter((t) => t.shift_id === active.id || (!t.shift_id && t.business_date === active.business_date));
   const combinedFeed = [
     ...shiftTxs.map((t) => ({ kind: 'tx', ts: new Date(t.created_at).getTime() || 0, data: t })),
@@ -2606,7 +2598,6 @@ function renderDashboard() {
   const filteredExps = state.expenses.filter((e) => matchesDateAndCashier(e.business_date, e.staff_name));
   const filteredLedger = state.notahLedger.filter((l) => l.entry_type === 'payment' && matchesDateAndCashier(l.business_date, l.staff_name));
 
-  // Drawer cash reflects current active shift if viewing CURRENT, else startCash=0 for historical range
   const startCash = (dayFilter === 'CURRENT' && !dateFrom && !dateTo && activeShift) ? (activeShift.start_cash || 0) : 0;
   const stats = computeFinancialStats(filteredTxs, filteredExps, filteredLedger, startCash);
   const marketNotah = state.clients.reduce((s, c) => s + (Number(c.notah_balance) || 0), 0);
@@ -2751,7 +2742,6 @@ function fixWrongBusinessDay() {
   }
   if (!confirm(`هل أنت متأكد من إلغاء يوم (${wrongDay}) بالكامل واستبداله بيوم (${correctDay})؟`)) return;
 
-  // Delete transactions, expenses, shifts of wrongDay
   const txsToDel = state.transactions.filter((t) => t.business_date === wrongDay);
   txsToDel.forEach((t) => queueCloudSync('arena_transactions', 'delete', { id: t.id }));
   state.transactions = state.transactions.filter((t) => t.business_date !== wrongDay);
@@ -2921,7 +2911,7 @@ function renderSettings() {
     </div>
   `).join('');
 
-  // Games list (Clean rows with explicit Delete button)
+  // Games list
   const games = state.settings.games || DEFAULT_GAMES;
   $('settingsGamesList').innerHTML = games.map((g, idx) => `
     <div class="mini-list-item">
@@ -3245,6 +3235,80 @@ function saveSettingsToCloud() {
 }
 
 /* ==========================================================================
+   DATA RESET CONTROLS (OPERATIONAL RESET & FACTORY RESET)
+   ========================================================================== */
+async function resetOperationalData() {
+  if (!mgmtUnlocked) {
+    showToast('يجب فتح قفل الإدارة أولاً!', 'error');
+    return;
+  }
+  if (!confirm('⚠️ هل أنت متأكد من تصفير كل الفواتير، الورديات، المصروفات، الحجوزات، وأرصدة النوتة؟\n(سيتم الإبقاء على الغرف والمنيو واليوزرز كما هم)')) return;
+
+  state.transactions = [];
+  state.shifts = [];
+  state.expenses = [];
+  state.handovers = [];
+  state.notahLedger = [];
+  state.reservations = [];
+
+  state.clients.forEach((c) => {
+    c.notah_balance = 0;
+  });
+
+  state.rooms.forEach((r) => resetRoomObject(r));
+  state.tables.forEach((t) => {
+    t.status = 'idle';
+    t.clientName = '';
+    t.openedAt = null;
+    t.orders = [];
+  });
+
+  localStorage.removeItem(STORAGE_KEYS.SYNC_QUEUE);
+  updateSyncBadge();
+  saveLocalDB();
+
+  if (supabaseClient && navigator.onLine) {
+    try {
+      const tablesToClear = [
+        'arena_transactions',
+        'arena_shifts',
+        'arena_expenses',
+        'arena_handovers',
+        'arena_notah_ledger',
+        'arena_reservations'
+      ];
+      for (const tbl of tablesToClear) {
+        await supabaseClient.from(tbl).delete().neq('id', '_none_');
+      }
+      if (state.clients.length) await supabaseClient.from('arena_clients').upsert(state.clients);
+      if (state.rooms.length) await supabaseClient.from('arena_rooms').upsert(state.rooms);
+      if (state.tables.length) await supabaseClient.from('arena_tables').upsert(state.tables);
+    } catch (e) {
+      console.warn('Cloud reset warning:', e.message);
+    }
+  }
+
+  renderAll();
+  showToast('تم تصفير الفواتير والورديات والحسابات بنجاح 🧹✅', 'success');
+}
+
+function factoryResetSystem() {
+  if (!mgmtUnlocked) {
+    showToast('يجب فتح قفل الإدارة أولاً!', 'error');
+    return;
+  }
+  if (!confirm('🚨 تحذير: سيتم مسح جميع البيانات المحلية وإعدادات الربط وإعادة تشغيل النظام من الصفر. هل تريد المتابعة؟')) return;
+  if (!confirm('تأكيد أخير: لا يمكن التراجع عن هذه الخطوة!')) return;
+
+  localStorage.removeItem(STORAGE_KEYS.LOCAL_DB);
+  localStorage.removeItem(STORAGE_KEYS.SYNC_QUEUE);
+  localStorage.removeItem(STORAGE_KEYS.URL);
+  localStorage.removeItem(STORAGE_KEYS.KEY);
+  sessionStorage.removeItem(STORAGE_KEYS.SESSION_USER);
+  location.reload();
+}
+
+/* ==========================================================================
    MASTER RENDER & EVENT BINDINGS
    ========================================================================== */
 function renderAll() {
@@ -3440,7 +3504,7 @@ function bindEvents() {
     showToast('تم حفظ تصميم الفاتورة ✅', 'success');
   });
 
-  // Settings: Mgmt Password, Users, WhatsApp, Menu, Rooms, Tables, Games
+  // Settings: Mgmt Password, Users, WhatsApp, Reset, Menu, Rooms, Tables, Games
   $('btnSaveMgmtPass').addEventListener('click', () => {
     const p1 = $('setMgmtNewPass').value.trim();
     const p2 = $('setMgmtConfirmPass').value.trim();
@@ -3467,6 +3531,9 @@ function bindEvents() {
     state.settings.ownerWhatsapp = $('setOwnerWhatsapp').value.trim();
     openWhatsappWithText(`✅ رسالة تجريبية من نظام ${state.settings.brandTitle || 'ARENA POS'}`);
   });
+
+  $('btnResetOperations').addEventListener('click', resetOperationalData);
+  $('btnFactoryReset').addEventListener('click', factoryResetSystem);
 
   $('btnAddMenuItem').addEventListener('click', saveMenuItem);
   $('btnCancelEditMenu').addEventListener('click', resetMenuForm);
