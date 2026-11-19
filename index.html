@@ -38,10 +38,16 @@
       <div class="ps-accent-bar"></div>
       <div class="auth-logo">ARENA</div>
       <p class="auth-subtitle">نظام إدارة صالات البلايستيشن والكافيه</p>
-      <div id="loginOfflineHint" class="offline-pill hidden">وضع أوفلاين نشط (يعمل بدون إنترنت)</div>
+      <div id="loginOfflineHint" class="offline-pill hidden">وضع أوفلاين نشط (يعمل بدون إنترنت وسيتم المزامنة تلقائياً)</div>
       <div class="form-group">
-        <label>أدخل الرقم السري (PIN)</label>
-        <input type="password" id="loginPin" class="pin-input" maxlength="8" inputmode="numeric" placeholder="••••" autocomplete="off" />
+        <label>اختر المستخدم (اختياري) أو أدخل الباسورد / PIN مباشرة</label>
+        <select id="loginUserSelect" class="filter-select" style="width:100%;margin-bottom:8px;">
+          <option value="">-- دخول سريع بالرقم السري / الباسورد --</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label>الباسورد / الرقم السري</label>
+        <input type="password" id="loginPin" class="pin-input" maxlength="20" placeholder="••••" autocomplete="off" />
       </div>
       <div class="pin-pad">
         <button type="button" class="pin-key" data-key="1">1</button>
@@ -57,7 +63,7 @@
         <button type="button" class="pin-key" data-key="0">0</button>
         <button type="button" class="pin-key key-enter" id="btnLogin">دخول ↵</button>
       </div>
-      <p id="loginError" class="error-text hidden">الرقم السري غير صحيح</p>
+      <p id="loginError" class="error-text hidden">الباسورد أو الرقم السري غير صحيح</p>
     </div>
   </div>
 
@@ -83,8 +89,11 @@
         <div id="shiftStatusBadge" class="shift-pill closed" onclick="switchTab('shift')">
           <span id="shiftStatusText">الوردية مغلقة</span>
         </div>
+        <div id="mgmtLockIndicator" class="mgmt-pill locked" onclick="openMgmtAuthModal()" title="حالة قفل الإدارة">
+          🔒 الإدارة مقفولة
+        </div>
         <div class="user-pill">
-          <span id="currentUserBadge">مدير</span>
+          <span id="currentUserBadge">كاشير</span>
         </div>
         <button id="btnLogout" class="btn btn-outline btn-sm">خروج</button>
       </div>
@@ -92,102 +101,219 @@
 
     <!-- Navigation Tabs -->
     <nav id="mainNav" class="main-nav">
-      <button class="nav-tab active" data-tab="dashboard">📊 الداشبورد</button>
-      <button class="nav-tab" data-tab="rooms">🎮 الغرف</button>
+      <button class="nav-tab active" data-tab="rooms">🎮 الغرف</button>
       <button class="nav-tab" data-tab="tables">🪑 الترابيزات</button>
       <button class="nav-tab" data-tab="cafe">☕ الكافيه والتيك أواي</button>
       <button class="nav-tab" data-tab="reservations">📅 الحجوزات <span id="upcomingResBadge" class="nav-count hidden">0</span></button>
       <button class="nav-tab" data-tab="clients">📒 العملاء والنوتة</button>
       <button class="nav-tab" data-tab="shift">💰 الوردية والتسليم</button>
-      <button class="nav-tab admin-only" data-tab="reports">📑 التقارير والسجل</button>
-      <button class="nav-tab admin-only" data-tab="settings">⚙️ الإعدادات والمنيو</button>
+      <button class="nav-tab mgmt-protected" data-tab="dashboard">🔒📊 الداشبورد والتحكم</button>
+      <button class="nav-tab mgmt-protected" data-tab="reports">🔒📑 التقارير والسجل</button>
+      <button class="nav-tab mgmt-protected" data-tab="settings">🔒⚙️ الإعدادات والمنيو والمخزون</button>
     </nav>
 
     <!-- Main Content Area -->
     <main class="main-content">
 
-      <!-- TAB 0: LIVE DASHBOARD -->
-      <section id="tab-dashboard" class="tab-panel active">
-        <div class="kpi-grid">
-          <div class="kpi-card highlight">
-            <span>إجمالي مبيعات اليوم (شامل النوتة)</span>
-            <strong id="dashTodayTotal">0 ج.م</strong>
-          </div>
-          <div class="kpi-card">
-            <span>الكاش الفعلي بالدرج الآن</span>
-            <strong id="dashDrawerCash">0 ج.م</strong>
-          </div>
-          <div class="kpi-card warning">
-            <span>مبيعات آجلة (على النوتة اليوم)</span>
-            <strong id="dashTodayNotah">0 ج.م</strong>
-          </div>
-          <div class="kpi-card info">
-            <span>تحصيلات نوتة سابقة اليوم</span>
-            <strong id="dashTodayNotahCollected">0 ج.م</strong>
-          </div>
-          <div class="kpi-card">
-            <span>فودافون كاش اليوم</span>
-            <strong id="dashTodayVfCash">0 ج.م</strong>
-          </div>
-          <div class="kpi-card">
-            <span>الغرف الشغالة الآن</span>
-            <strong id="dashActiveRoomsCount">0 / 0</strong>
-          </div>
-          <div class="kpi-card">
-            <span>الترابيزات المفتوحة الآن</span>
-            <strong id="dashActiveTablesCount">0 / 0</strong>
-          </div>
-          <div class="kpi-card danger">
-            <span>إجمالي مستحقات النوتة بالسوق</span>
-            <strong id="dashMarketNotah">0 ج.م</strong>
-          </div>
+      <!-- TAB 0: MANAGEMENT DASHBOARD (PROTECTED BY MANAGEMENT PASSWORD) -->
+      <section id="tab-dashboard" class="tab-panel">
+        <!-- Locked Placeholder -->
+        <div id="dashboardLockedGate" class="card empty-shift-card">
+          <h2>🔐 لوحة التحكم والداشبورد محمية بباسورد الإدارة</h2>
+          <p>أدخل باسورد الإدارة للوصول لتحليلات المبيعات، تصحيح الأيام، إدارة اليوزرز، وتعديل المنيو والمخزون.</p>
+          <button type="button" class="btn btn-primary btn-lg" onclick="openMgmtAuthModal('dashboard')">🔓 إدخال باسورد الإدارة</button>
         </div>
 
-        <div class="dash-main-grid">
-          <div class="card">
-            <div class="card-header-flex">
-              <h3 class="card-title">🎮 حالة الغرف والترابيزات لحظياً</h3>
+        <!-- Unlocked Dashboard Content -->
+        <div id="dashboardUnlockedContent" class="hidden">
+          <!-- Top Control Bar -->
+          <div class="card filter-bar">
+            <div class="card-header-flex" style="margin-bottom:12px;">
+              <div>
+                <h3 class="card-title" style="margin:0;">📊 لوحة تحكم الإدارة وتحليل المبيعات</h3>
+                <span class="hint-text" style="margin:0;">فلتر المبيعات حسب اليوم، الغرف، المشاريب، أو الكاشير وتحكم في النظام بالكامل</span>
+              </div>
               <div class="btn-row">
-                <button class="btn btn-primary btn-xs" onclick="switchTab('rooms')">فتح الغرف</button>
-                <button class="btn btn-outline btn-xs" onclick="switchTab('tables')">فتح الترابيزات</button>
+                <button type="button" class="btn btn-outline btn-sm" onclick="switchTab('settings')">⚙️ المنيو والمخزون والريسيت</button>
+                <button type="button" id="btnLockMgmt" class="btn btn-danger btn-sm">🔒 قفل الداشبورد</button>
               </div>
             </div>
-            <div id="dashLiveUnitsGrid" class="dash-units-grid"></div>
+
+            <!-- Comprehensive Sales Analytics Filter -->
+            <div class="form-row inline-filters">
+              <div class="form-group">
+                <label>📅 فلتر اليوم (Business Day)</label>
+                <select id="dashFilterBusinessDay">
+                  <option value="CURRENT">اليوم / الوردية الحالية</option>
+                  <option value="ALL">كل الأيام المسجلة</option>
+                </select>
+              </div>
+              <div class="form-group">
+                <label>من تاريخ</label>
+                <input type="date" id="dashFilterDateFrom" />
+              </div>
+              <div class="form-group">
+                <label>إلى تاريخ</label>
+                <input type="date" id="dashFilterDateTo" />
+              </div>
+              <div class="form-group">
+                <label>🎮 فلتر الغرف / الترابيزات</label>
+                <select id="dashFilterRoom">
+                  <option value="ALL">كل الغرف والكافيه</option>
+                  <option value="ROOMS_ONLY">كل الغرف فقط</option>
+                  <option value="CAFE_ONLY">الترابيزات والتيك أواي فقط</option>
+                </select>
+              </div>
+              <div class="form-group">
+                <label>☕ فلتر المشاريب / الأصناف</label>
+                <select id="dashFilterDrink">
+                  <option value="ALL">كل المشاريب والأصناف</option>
+                </select>
+              </div>
+              <div class="form-group">
+                <label>👤 الكاشير</label>
+                <select id="dashFilterCashier">
+                  <option value="ALL">كل الكاشيرية</option>
+                </select>
+              </div>
+              <div class="btn-row" style="align-self:flex-end;">
+                <button type="button" id="btnApplyDashFilter" class="btn btn-primary">🔍 تطبيق الفلتر</button>
+                <button type="button" id="btnResetDashFilter" class="btn btn-outline">إعادة ضبط</button>
+              </div>
+            </div>
           </div>
 
+          <!-- KPI Cards (Dynamic based on filters) -->
+          <div class="kpi-grid">
+            <div class="kpi-card highlight">
+              <span>إجمالي المبيعات (حسب الفلتر)</span>
+              <strong id="dashTodayTotal">0 ج.م</strong>
+            </div>
+            <div class="kpi-card">
+              <span>إيراد الغرف (المفلتر)</span>
+              <strong id="dashFilteredRoomsRev">0 ج.م</strong>
+            </div>
+            <div class="kpi-card info">
+              <span>إيراد المشاريب والأصناف (المفلتر)</span>
+              <strong id="dashFilteredDrinksRev">0 ج.م</strong>
+            </div>
+            <div class="kpi-card">
+              <span>الكاش الفعلي بالدرج الآن</span>
+              <strong id="dashDrawerCash">0 ج.م</strong>
+            </div>
+            <div class="kpi-card warning">
+              <span>مبيعات آجلة (على النوتة)</span>
+              <strong id="dashTodayNotah">0 ج.م</strong>
+            </div>
+            <div class="kpi-card info">
+              <span>تحصيلات نوتة سابقة</span>
+              <strong id="dashTodayNotahCollected">0 ج.م</strong>
+            </div>
+            <div class="kpi-card">
+              <span>فودافون كاش</span>
+              <strong id="dashTodayVfCash">0 ج.م</strong>
+            </div>
+            <div class="kpi-card danger">
+              <span>إجمالي مستحقات النوتة بالسوق</span>
+              <strong id="dashMarketNotah">0 ج.م</strong>
+            </div>
+          </div>
+
+          <!-- Day & Shift Correction + Quick Admin Controls -->
+          <div class="split-grid">
+            <!-- Fix Wrong Business Day Card -->
+            <div class="card">
+              <h3 class="card-title">🗓️ إدارة الأيام وتصحيح اليوم المفتوح بالغلط</h3>
+              <p class="hint-text">لو الموظف فتح يوم بالغلط، تقدر تلغي اليوم الغلط تماماً (كأنه ماتفتحش خالص من التقارير والسيستم) وتفتحله اليوم الصح مكانه.</p>
+              <div class="form-row">
+                <div class="form-group">
+                  <label>اختر اليوم الغلط لإلغائه</label>
+                  <select id="dashWrongDaySelect"></select>
+                </div>
+                <div class="form-group">
+                  <label>اليوم الصح اللي هيتفتح مكانه *</label>
+                  <input type="date" id="dashCorrectDayInput" />
+                </div>
+              </div>
+              <div class="form-group">
+                <label style="display:flex;align-items:center;gap:8px;cursor:pointer;">
+                  <input type="checkbox" id="dashKeepActiveTimers" checked style="width:auto;" />
+                  <span>نقل الغرف/الترابيزات الشغالة حالياً لليوم الصح (مع مسح سجل اليوم الغلط بالكامل)</span>
+                </label>
+              </div>
+              <button type="button" id="btnFixWrongBusinessDay" class="btn btn-danger btn-block">🗑️ إلغاء اليوم الغلط وفتح اليوم الصح</button>
+            </div>
+
+            <!-- Live Units & Quick Access -->
+            <div class="card">
+              <div class="card-header-flex">
+                <h3 class="card-title">🎮 حالة الغرف والترابيزات لحظياً (<span id="dashActiveRoomsCount">0/0</span> غرفة | <span id="dashActiveTablesCount">0/0</span> ترابيزة)</h3>
+                <div class="btn-row">
+                  <button class="btn btn-primary btn-xs" onclick="switchTab('rooms')">الغرف</button>
+                  <button class="btn btn-outline btn-xs" onclick="switchTab('tables')">الترابيزات</button>
+                </div>
+              </div>
+              <div id="dashLiveUnitsGrid" class="dash-units-grid"></div>
+            </div>
+          </div>
+
+          <!-- Analytical Breakdown: Items / Rooms Sales Analysis -->
+          <div class="dash-main-grid">
+            <div class="card">
+              <div class="card-header-flex">
+                <h3 class="card-title">📈 تحليل مبيعات الغرف والمشاريب (حسب الفلتر)</h3>
+                <span id="dashFilterSummaryTag" class="hint-text" style="margin:0;">عرض الكل</span>
+              </div>
+              <div class="table-responsive">
+                <table class="data-table">
+                  <thead>
+                    <tr>
+                      <th>الغرفة / الصنف</th>
+                      <th>النوع</th>
+                      <th>الكمية / عدد المرات</th>
+                      <th>إجمالي الإيراد</th>
+                    </tr>
+                  </thead>
+                  <tbody id="dashAnalyticsBreakdownBody"></tbody>
+                </table>
+              </div>
+            </div>
+
+            <div class="card">
+              <h3 class="card-title">🔥 الأكثر مبيعاً & حجوزات قادمة</h3>
+              <div id="dashTopItemsList" class="mini-list"></div>
+              <hr class="divider" />
+              <h4 style="font-size:0.9rem;color:var(--ps-cyan);margin-bottom:8px;">📅 الحجوزات القادمة اليوم</h4>
+              <div id="dashUpcomingResList" class="mini-list"></div>
+            </div>
+          </div>
+
+          <!-- Filtered Transactions Table -->
           <div class="card">
-            <h3 class="card-title">🔥 الأكثر مبيعاً اليوم & حجوزات قادمة</h3>
-            <div id="dashTopItemsList" class="mini-list"></div>
-            <hr class="divider" />
-            <h4 style="font-size:0.9rem;color:var(--ps-cyan);margin-bottom:8px;">📅 الحجوزات القادمة اليوم</h4>
-            <div id="dashUpcomingResList" class="mini-list"></div>
-          </div>
-        </div>
-
-        <div class="card">
-          <div class="card-header-flex">
-            <h3 class="card-title">🧾 آخر الفواتير والعمليات اليوم</h3>
-            <span class="hint-text" style="margin:0">يوضح الدفع النقدي والمبالغ المسجلة على النوتة</span>
-          </div>
-          <div class="table-responsive">
-            <table class="data-table">
-              <thead>
-                <tr>
-                  <th>الوقت</th>
-                  <th>البيان</th>
-                  <th>الإجمالي</th>
-                  <th>تفاصيل التحصيل / النوتة</th>
-                  <th>الكاشير</th>
-                </tr>
-              </thead>
-              <tbody id="dashRecentTxBody"></tbody>
-            </table>
+            <div class="card-header-flex">
+              <h3 class="card-title">🧾 سجل الفواتير والعمليات (المفلترة)</h3>
+              <span class="hint-text" style="margin:0">مرتبطة باليوم المختار في الوردية</span>
+            </div>
+            <div class="table-responsive">
+              <table class="data-table">
+                <thead>
+                  <tr>
+                    <th>اليوم والوقت</th>
+                    <th>البيان والتفاصيل</th>
+                    <th>الإجمالي</th>
+                    <th>تفاصيل التحصيل / النوتة</th>
+                    <th>الكاشير</th>
+                  </tr>
+                </thead>
+                <tbody id="dashRecentTxBody"></tbody>
+              </table>
+            </div>
           </div>
         </div>
       </section>
 
       <!-- TAB 1: ROOMS (PS5 Cards) -->
-      <section id="tab-rooms" class="tab-panel">
+      <section id="tab-rooms" class="tab-panel active">
         <div id="roomsSummaryBar" class="rooms-summary-bar"></div>
         <div id="roomsGrid" class="ps5-rooms-grid"></div>
       </section>
@@ -341,16 +467,17 @@
         <!-- Closed Shift Banner -->
         <div id="shiftClosedCard" class="card empty-shift-card hidden">
           <h2>🔒 لا توجد وردية مفتوحة حالياً</h2>
-          <p>افتح وردية جديدة لتسجيل حركة الدرج والمبيعات بدقة.</p>
-          <button id="btnShowOpenShift" class="btn btn-success btn-lg">🟢 فتح وردية جديدة</button>
+          <p>افتح وردية جديدة وحدد **اليوم** اللي هتشتغل عليه عشان كل الحسابات تتقفل أوتوماتيك على نفس اليوم.</p>
+          <button id="btnShowOpenShift" class="btn btn-success btn-lg">🟢 فتح وردية جديدة واختيار اليوم</button>
         </div>
 
         <!-- Open Shift Dashboard -->
         <div id="shiftOpenCard" class="hidden">
           <div class="card shift-header-card">
             <div>
-              <h3>🟢 الوردية الحالية مفتوحة</h3>
-              <p>الكاشير المسؤول حالياً: <strong id="shiftStaffName">-</strong> | بداية الوردية: <strong id="shiftStartTime">-</strong></p>
+              <h3>🟢 الوردية الحالية مفتوحة — يوم العمل: <span id="shiftBusinessDateBadge" style="color:var(--ps-cyan);">-</span></h3>
+              <p>الكاشير المسؤول: <strong id="shiftStaffName">-</strong> | وقت الفتح الفعلي: <strong id="shiftStartTime">-</strong></p>
+              <small class="hint-text" style="margin:0;">أي عملية أو تقفيل للوردية هيسمّع أوتوماتيك في يوم (<strong id="shiftBusinessDateNote">-</strong>) حتى لو عدت الساعة 12 بالليل.</small>
             </div>
             <div class="btn-row">
               <button id="btnShowHandoverShift" class="btn btn-warning btn-lg">🤝 تسليم الوردية لموظف آخر</button>
@@ -422,239 +549,357 @@
         </div>
       </section>
 
-      <!-- TAB 7: REPORTS (ADMIN ONLY) -->
+      <!-- TAB 7: REPORTS (MANAGEMENT PROTECTED) -->
       <section id="tab-reports" class="tab-panel">
-        <div class="card filter-bar">
-          <div class="form-row inline-filters">
-            <div class="form-group">
-              <label>من تاريخ</label>
-              <input type="date" id="reportDateFrom" />
-            </div>
-            <div class="form-group">
-              <label>إلى تاريخ</label>
-              <input type="date" id="reportDateTo" />
-            </div>
-            <button id="btnFilterReports" class="btn btn-primary">🔍 عرض التقرير</button>
-          </div>
+        <div id="reportsLockedGate" class="card empty-shift-card">
+          <h2>🔐 التقارير والسجل محمية بباسورد الإدارة</h2>
+          <p>أدخل باسورد الإدارة لعرض تقارير الأيام السابقة وسجل الفواتير.</p>
+          <button type="button" class="btn btn-primary btn-lg" onclick="openMgmtAuthModal('reports')">🔓 إدخال باسورد الإدارة</button>
         </div>
 
-        <div class="kpi-grid">
-          <div class="kpi-card highlight">
-            <span>إجمالي المبيعات (شامل النوتة)</span>
-            <strong id="repTotalRevenue">0 ج.م</strong>
+        <div id="reportsUnlockedContent" class="hidden">
+          <div class="card filter-bar">
+            <div class="form-row inline-filters">
+              <div class="form-group">
+                <label>من يوم عمل</label>
+                <input type="date" id="reportDateFrom" />
+              </div>
+              <div class="form-group">
+                <label>إلى يوم عمل</label>
+                <input type="date" id="reportDateTo" />
+              </div>
+              <div class="form-group">
+                <label>الغرفة / القسم</label>
+                <select id="reportFilterRoom">
+                  <option value="ALL">الكل</option>
+                </select>
+              </div>
+              <div class="form-group">
+                <label>الصنف / المشروب</label>
+                <select id="reportFilterItem">
+                  <option value="ALL">كل الأصناف</option>
+                </select>
+              </div>
+              <button id="btnFilterReports" class="btn btn-primary">🔍 عرض التقرير</button>
+            </div>
           </div>
-          <div class="kpi-card">
-            <span>إيراد الغرف</span>
-            <strong id="repRoomsRev">0 ج.م</strong>
-          </div>
-          <div class="kpi-card">
-            <span>إيراد الترابيزات والكافيه</span>
-            <strong id="repCafeRev">0 ج.م</strong>
-          </div>
-          <div class="kpi-card warning">
-            <span>مبيعات على النوتة</span>
-            <strong id="repNotahSales">0 ج.م</strong>
-          </div>
-          <div class="kpi-card info">
-            <span>تحصيلات نوتة سابقة</span>
-            <strong id="repNotahCollected">0 ج.م</strong>
-          </div>
-          <div class="kpi-card danger">
-            <span>المصروفات</span>
-            <strong id="repExpenses">0 ج.م</strong>
-          </div>
-        </div>
 
-        <div class="card">
-          <h3 class="card-title">📑 سجل الفواتير والعمليات التفصيلي</h3>
-          <div class="table-responsive">
-            <table class="data-table">
-              <thead>
-                <tr>
-                  <th>التاريخ والوقت</th>
-                  <th>النوع / التفاصيل</th>
-                  <th>الإجمالي</th>
-                  <th>طريقة الدفع / النوتة</th>
-                  <th>الكاشير</th>
-                </tr>
-              </thead>
-              <tbody id="reportsTransactionsBody"></tbody>
-            </table>
+          <div class="kpi-grid">
+            <div class="kpi-card highlight">
+              <span>إجمالي المبيعات (شامل النوتة)</span>
+              <strong id="repTotalRevenue">0 ج.م</strong>
+            </div>
+            <div class="kpi-card">
+              <span>إيراد الغرف</span>
+              <strong id="repRoomsRev">0 ج.م</strong>
+            </div>
+            <div class="kpi-card">
+              <span>إيراد الترابيزات والكافيه</span>
+              <strong id="repCafeRev">0 ج.م</strong>
+            </div>
+            <div class="kpi-card warning">
+              <span>مبيعات على النوتة</span>
+              <strong id="repNotahSales">0 ج.م</strong>
+            </div>
+            <div class="kpi-card info">
+              <span>تحصيلات نوتة سابقة</span>
+              <strong id="repNotahCollected">0 ج.م</strong>
+            </div>
+            <div class="kpi-card danger">
+              <span>المصروفات</span>
+              <strong id="repExpenses">0 ج.م</strong>
+            </div>
+          </div>
+
+          <div class="card">
+            <h3 class="card-title">📑 سجل الفواتير والعمليات التفصيلي</h3>
+            <div class="table-responsive">
+              <table class="data-table">
+                <thead>
+                  <tr>
+                    <th>يوم العمل والوقت</th>
+                    <th>النوع / التفاصيل</th>
+                    <th>الإجمالي</th>
+                    <th>طريقة الدفع / النوتة</th>
+                    <th>الكاشير</th>
+                  </tr>
+                </thead>
+                <tbody id="reportsTransactionsBody"></tbody>
+              </table>
+            </div>
           </div>
         </div>
       </section>
 
-      <!-- TAB 8: SETTINGS & CUSTOMIZATION (ADMIN ONLY) -->
+      <!-- TAB 8: SETTINGS, MENU, INVENTORY & RECEIPT DESIGNER (MANAGEMENT PROTECTED) -->
       <section id="tab-settings" class="tab-panel">
-        <div class="settings-grid">
+        <div id="settingsLockedGate" class="card empty-shift-card">
+          <h2>🔐 الإعدادات والمنيو والمخزون محمية بباسورد الإدارة</h2>
+          <p>أدخل باسورد الإدارة لتعديل تصميم الفاتورة، إدارة اليوزرز، أو تعديل المنيو والمخزون.</p>
+          <button type="button" class="btn btn-primary btn-lg" onclick="openMgmtAuthModal('settings')">🔓 إدخال باسورد الإدارة</button>
+        </div>
 
-          <!-- Receipt Designer -->
-          <div class="card">
-            <h3 class="card-title">🧾 تصميم وتخصيص الفاتورة</h3>
-            <div class="form-group">
-              <label>لوجو المحل (يظهر أعلى الفاتورة)</label>
-              <div class="file-upload-row">
-                <input type="file" id="setReceiptLogoInput" accept="image/*" />
-                <button type="button" id="btnRemoveReceiptLogo" class="btn btn-outline btn-sm">حذف اللوجو</button>
+        <div id="settingsUnlockedContent" class="hidden">
+          <div class="settings-grid">
+
+            <!-- Receipt Designer (80mm / 58mm Thermal POS) -->
+            <div class="card">
+              <h3 class="card-title">🧾 تصميم وتخصيص الفاتورة (مقاس الريسيت الحراري)</h3>
+              <div class="form-row">
+                <div class="form-group">
+                  <label>مقاس ورق البرينتر (Thermal Size)</label>
+                  <select id="setReceiptPaperSize">
+                    <option value="80mm">80mm (مقاس الريسيت العادي القياسي)</option>
+                    <option value="58mm">58mm (مقاس الريسيت الصغير)</option>
+                  </select>
+                </div>
+                <div class="form-group">
+                  <label>حجم الخط بالفاتورة</label>
+                  <select id="setReceiptFontSize">
+                    <option value="normal">متوسط (قياسي)</option>
+                    <option value="large">كبير وواضح</option>
+                    <option value="compact">مضغوط</option>
+                  </select>
+                </div>
+              </div>
+              <div class="form-group">
+                <label>لوجو المحل (يظهر أعلى الفاتورة)</label>
+                <div class="file-upload-row">
+                  <input type="file" id="setReceiptLogoInput" accept="image/*" />
+                  <button type="button" id="btnRemoveReceiptLogo" class="btn btn-outline btn-sm">حذف اللوجو</button>
+                </div>
+              </div>
+              <div class="form-group">
+                <label>الجملة العلوية (اسم المكان / العنوان / التليفون / Wi-Fi)</label>
+                <textarea id="setReceiptHeader" rows="3" placeholder="ARENA PLAYSTATION&#10;العنوان: ... | تليفون: 010..."></textarea>
+              </div>
+              <div class="form-group">
+                <label>الجملة الختامية (أسفل الفاتورة)</label>
+                <textarea id="setReceiptFooter" rows="2" placeholder="شكراً لزيارتكم - نتمنى لكم وقتاً ممتعاً!"></textarea>
+              </div>
+              <button id="btnSaveReceiptSettings" class="btn btn-primary btn-block">💾 حفظ تصميم الفاتورة</button>
+
+              <div class="receipt-preview-wrapper">
+                <span class="preview-label">معاينة حية بمقاس الريسيت (<span id="previewPaperSizeTag">80mm</span>):</span>
+                <div id="receiptLivePreview" class="receipt-paper receipt-80mm"></div>
               </div>
             </div>
-            <div class="form-group">
-              <label>الجملة العلوية (اسم المكان / العنوان / التليفون / Wi-Fi)</label>
-              <textarea id="setReceiptHeader" rows="3" placeholder="ARENA PLAYSTATION&#10;العنوان: ... | تليفون: 010..."></textarea>
-            </div>
-            <div class="form-group">
-              <label>الجملة الختامية (أسفل الفاتورة)</label>
-              <textarea id="setReceiptFooter" rows="2" placeholder="شكراً لزيارتكم - نتمنى لكم وقتاً ممتعاً!"></textarea>
-            </div>
-            <button id="btnSaveReceiptSettings" class="btn btn-primary btn-block">💾 حفظ تصميم الفاتورة</button>
 
-            <div class="receipt-preview-wrapper">
-              <span class="preview-label">معاينة شكل الفاتورة:</span>
-              <div id="receiptLivePreview" class="receipt-paper"></div>
+            <!-- Management Password, Users & WhatsApp -->
+            <div class="card">
+              <h3 class="card-title">🔑 باسورد الإدارة (قفل الداشبورد والإعدادات)</h3>
+              <p class="hint-text">هذا الباسورد مخصص لفتح الداشبورد والتقارير والإعدادات فقط.</p>
+              <div class="form-row">
+                <div class="form-group">
+                  <label>الباسورد الجديد للإدارة</label>
+                  <input type="password" id="setMgmtNewPass" placeholder="أدخل باسورد الإدارة الجديد" />
+                </div>
+                <div class="form-group">
+                  <label>تأكيد الباسورد</label>
+                  <input type="password" id="setMgmtConfirmPass" placeholder="أعد إدخال الباسورد" />
+                </div>
+              </div>
+              <button type="button" id="btnSaveMgmtPass" class="btn btn-warning btn-block">🔐 حفظ / تغيير باسورد الإدارة</button>
+
+              <hr class="divider" />
+
+              <h3 class="card-title">👥 إدارة اليوزرز وتغيير الباسوردات</h3>
+              <input type="hidden" id="setEditUserId" />
+              <div class="form-row">
+                <div class="form-group">
+                  <label>اسم اليوزر / الموظف *</label>
+                  <input type="text" id="setUserName" placeholder="اسم الموظف أو المدير" />
+                </div>
+                <div class="form-group">
+                  <label>الباسورد / PIN *</label>
+                  <input type="text" id="setUserPin" maxlength="20" placeholder="1234" dir="ltr" />
+                </div>
+                <div class="form-group">
+                  <label>الصلاحية</label>
+                  <select id="setUserRole">
+                    <option value="staff">كاشير (Staff)</option>
+                    <option value="admin">مدير (Admin)</option>
+                  </select>
+                </div>
+              </div>
+              <div class="btn-row">
+                <button id="btnAddUser" class="btn btn-primary btn-sm">➕ إضافة يوزر جديد</button>
+                <button id="btnCancelEditUser" type="button" class="btn btn-outline btn-sm hidden">إلغاء التعديل</button>
+              </div>
+              <div id="settingsUsersList" class="mini-list"></div>
+
+              <hr class="divider" />
+
+              <h3 class="card-title">📲 رقم واتساب تقارير الإدارة</h3>
+              <div class="form-group">
+                <label>رقم الواتساب بكود الدولة بدون + (مثال: 201012345678)</label>
+                <input type="tel" id="setOwnerWhatsapp" placeholder="2010xxxxxxxx" dir="ltr" />
+              </div>
+              <div class="btn-row">
+                <button id="btnSaveWhatsapp" class="btn btn-primary">💾 حفظ الرقم</button>
+                <button id="btnTestWhatsapp" class="btn btn-success">📲 تجربة الإرسال</button>
+              </div>
             </div>
+
+            <!-- Full Menu & Inventory Management -->
+            <div class="card">
+              <h3 class="card-title">☕📦 إدارة المنيو والمخزون بكل تفاصيله</h3>
+              <input type="hidden" id="setEditMenuId" />
+              <div class="form-row">
+                <div class="form-group">
+                  <label>اسم الصنف *</label>
+                  <input type="text" id="setMenuName" placeholder="مثال: بيبسي / شاي / إسبريسو / شيبسي" />
+                </div>
+                <div class="form-group">
+                  <label>القسم</label>
+                  <select id="setMenuCategory">
+                    <option value="قهوة">قهوة</option>
+                    <option value="مشروبات ساخنة">مشروبات ساخنة</option>
+                    <option value="آيس كوفي">آيس كوفي</option>
+                    <option value="صودا ومياه">صودا ومياه</option>
+                    <option value="سموزي وميلك شيك">سموزي وميلك شيك</option>
+                    <option value="سناكس وحلويات">سناكس وحلويات</option>
+                  </select>
+                </div>
+              </div>
+              <div class="form-row">
+                <div class="form-group">
+                  <label>سعر البيع (ج.م) *</label>
+                  <input type="number" id="setMenuPrice" min="0" step="0.5" placeholder="20" />
+                </div>
+                <div class="form-group">
+                  <label>سعر التكلفة (ج.م)</label>
+                  <input type="number" id="setMenuCost" min="0" step="0.5" placeholder="12" />
+                </div>
+                <div class="form-group">
+                  <label>الكمية بالمخزون</label>
+                  <input type="number" id="setMenuStock" min="0" placeholder="50" />
+                </div>
+              </div>
+              <div class="form-row">
+                <div class="form-group">
+                  <label>حد التنبيه لنقص المخزون</label>
+                  <input type="number" id="setMenuMinStock" min="0" value="5" placeholder="5" />
+                </div>
+                <div class="form-group">
+                  <label>الوحدة</label>
+                  <input type="text" id="setMenuUnit" value="قطعة" placeholder="قطعة / علبة / كوب" />
+                </div>
+                <div class="form-group">
+                  <label>شكل الأيقونة</label>
+                  <select id="setMenuIcon">
+                    <option value="auto">🤖 تلقائي حسب الاسم</option>
+                    <option value="can">🥤 كانز / صودا</option>
+                    <option value="water">💧 زجاجة مياه</option>
+                    <option value="coffee">☕ فنجان قهوة / إسبريسو</option>
+                    <option value="tea">🍵 كوب شاي / أعشاب</option>
+                    <option value="iced">🧋 كوب مثلج / آيس كوفي / شيك</option>
+                    <option value="juice">🍹 عصير / موهيتو</option>
+                    <option value="snack">🍟 سناكس / شيبسي</option>
+                    <option value="sweet">🧇 حلويات / وافل / مولتن</option>
+                  </select>
+                </div>
+              </div>
+              <div class="btn-row">
+                <button id="btnAddMenuItem" class="btn btn-primary btn-block">➕ إضافة صنف للمنيو والمخزون</button>
+                <button id="btnCancelEditMenu" type="button" class="btn btn-outline hidden">إلغاء التعديل</button>
+              </div>
+
+              <hr class="divider" />
+              <div class="card-header-flex">
+                <h4 style="margin:0;">📋 قائمة المنيو وأرصدة المخزون</h4>
+                <input type="text" id="settingsMenuSearch" class="search-sm" placeholder="🔍 بحث في المنيو والمخزون..." />
+              </div>
+              <div id="settingsMenuList" class="mini-list" style="max-height:420px;overflow-y:auto;"></div>
+            </div>
+
+            <!-- Rooms, Tables & Games Management -->
+            <div class="card">
+              <h3 class="card-title">🎮 إدارة الغرف وأسعار الساعة</h3>
+              <input type="hidden" id="setEditRoomId" />
+              <div class="form-row">
+                <div class="form-group">
+                  <label>اسم الغرفة</label>
+                  <input type="text" id="setRoomName" placeholder="Room 8 أو VIP" />
+                </div>
+                <div class="form-group">
+                  <label>الجهاز</label>
+                  <select id="setRoomType">
+                    <option value="PS5">PS5</option>
+                    <option value="PS4">PS4</option>
+                  </select>
+                </div>
+              </div>
+              <div class="form-row">
+                <div class="form-group">
+                  <label>سعر الساعة Single</label>
+                  <input type="number" id="setRoomSingleRate" placeholder="50" />
+                </div>
+                <div class="form-group">
+                  <label>سعر الساعة Multi</label>
+                  <input type="number" id="setRoomMultiRate" placeholder="70" />
+                </div>
+              </div>
+              <div class="btn-row">
+                <button id="btnAddRoom" class="btn btn-primary btn-block">➕ إضافة / حفظ غرفة</button>
+                <button id="btnCancelEditRoom" type="button" class="btn btn-outline hidden">إلغاء</button>
+              </div>
+              <div id="settingsRoomsList" class="mini-list"></div>
+
+              <hr class="divider" />
+
+              <h3 class="card-title">🪑 إدارة الترابيزات</h3>
+              <div class="form-row">
+                <div class="form-group">
+                  <label>اسم / رقم الترابيزة</label>
+                  <input type="text" id="setTableName" placeholder="مثال: ترابيزة 7 أو VIP" />
+                </div>
+                <button id="btnAddTable" class="btn btn-primary">➕ إضافة ترابيزة</button>
+              </div>
+              <div id="settingsTablesList" class="mini-list"></div>
+
+              <hr class="divider" />
+
+              <h3 class="card-title">🕹️ قائمة الألعاب</h3>
+              <div class="form-row">
+                <div class="form-group">
+                  <label>اسم اللعبة</label>
+                  <input type="text" id="setGameName" placeholder="مثال: FC 26 / PES / GTA V" />
+                </div>
+                <button id="btnAddGame" class="btn btn-primary">➕ إضافة</button>
+              </div>
+              <div id="settingsGamesList" class="tags-list"></div>
+            </div>
+
           </div>
-
-          <!-- WhatsApp & Users -->
-          <div class="card">
-            <h3 class="card-title">📲 إعدادات تقرير الواتساب للمدير</h3>
-            <p class="hint-text">أدخل رقم واتساب صاحب/مدير المحل بكود الدولة بدون + (مثال: <code>201012345678</code>) ليتم إرسال تقارير التقفيل والتسليم إليه.</p>
-            <div class="form-group">
-              <label>رقم واتساب الإدارة</label>
-              <input type="tel" id="setOwnerWhatsapp" placeholder="2010xxxxxxxx" dir="ltr" />
-            </div>
-            <div class="btn-row">
-              <button id="btnSaveWhatsapp" class="btn btn-primary">💾 حفظ الرقم</button>
-              <button id="btnTestWhatsapp" class="btn btn-success">📲 تجربة الإرسال</button>
-            </div>
-
-            <hr class="divider" />
-
-            <h3 class="card-title">🔐 إدارة الحسابات والأرقام السرية</h3>
-            <div class="form-row">
-              <div class="form-group">
-                <label>الاسم</label>
-                <input type="text" id="setUserName" placeholder="اسم الموظف أو المدير" />
-              </div>
-              <div class="form-group">
-                <label>الرقم السري (PIN)</label>
-                <input type="text" id="setUserPin" maxlength="8" placeholder="1111" dir="ltr" />
-              </div>
-              <div class="form-group">
-                <label>الصلاحية</label>
-                <select id="setUserRole">
-                  <option value="staff">كاشير (Staff)</option>
-                  <option value="admin">مدير (Admin)</option>
-                </select>
-              </div>
-            </div>
-            <button id="btnAddUser" class="btn btn-primary btn-sm">➕ إضافة / تحديث حساب</button>
-            <div id="settingsUsersList" class="mini-list"></div>
-          </div>
-
-          <!-- Rooms & Tables Management -->
-          <div class="card">
-            <h3 class="card-title">🎮 إدارة الغرف وأسعار الساعة</h3>
-            <div class="form-row">
-              <div class="form-group">
-                <label>اسم الغرفة</label>
-                <input type="text" id="setRoomName" placeholder="Room 8 أو VIP" />
-              </div>
-              <div class="form-group">
-                <label>الجهاز</label>
-                <select id="setRoomType">
-                  <option value="PS5">PS5</option>
-                  <option value="PS4">PS4</option>
-                </select>
-              </div>
-            </div>
-            <div class="form-row">
-              <div class="form-group">
-                <label>سعر الساعة Single</label>
-                <input type="number" id="setRoomSingleRate" placeholder="50" />
-              </div>
-              <div class="form-group">
-                <label>سعر الساعة Multi</label>
-                <input type="number" id="setRoomMultiRate" placeholder="70" />
-              </div>
-            </div>
-            <button id="btnAddRoom" class="btn btn-primary btn-block">➕ إضافة غرفة</button>
-            <div id="settingsRoomsList" class="mini-list"></div>
-
-            <hr class="divider" />
-
-            <h3 class="card-title">🪑 إدارة الترابيزات</h3>
-            <div class="form-row">
-              <div class="form-group">
-                <label>اسم / رقم الترابيزة</label>
-                <input type="text" id="setTableName" placeholder="مثال: ترابيزة 7 أو VIP" />
-              </div>
-              <button id="btnAddTable" class="btn btn-primary">➕ إضافة ترابيزة</button>
-            </div>
-            <div id="settingsTablesList" class="mini-list"></div>
-          </div>
-
-          <!-- Games & Cafe Menu Management -->
-          <div class="card">
-            <h3 class="card-title">🕹️ قائمة الألعاب</h3>
-            <div class="form-row">
-              <div class="form-group">
-                <label>اسم اللعبة</label>
-                <input type="text" id="setGameName" placeholder="مثال: FC 26 / PES / GTA V" />
-              </div>
-              <button id="btnAddGame" class="btn btn-primary">➕ إضافة</button>
-            </div>
-            <div id="settingsGamesList" class="tags-list"></div>
-
-            <hr class="divider" />
-
-            <h3 class="card-title">☕ إدارة أصناف الكافيه والمنيو</h3>
-            <div class="form-row">
-              <div class="form-group">
-                <label>اسم الصنف (تتعرف الأيقونة تلقائياً)</label>
-                <input type="text" id="setMenuName" placeholder="مثال: بيبسي / شاي / إسبريسو / شيبسي" />
-              </div>
-              <div class="form-group">
-                <label>القسم</label>
-                <select id="setMenuCategory">
-                  <option value="قهوة">قهوة</option>
-                  <option value="مشروبات ساخنة">مشروبات ساخنة</option>
-                  <option value="آيس كوفي">آيس كوفي</option>
-                  <option value="صودا ومياه">صودا ومياه</option>
-                  <option value="سموزي وميلك شيك">سموزي وميلك شيك</option>
-                  <option value="سناكس وحلويات">سناكس وحلويات</option>
-                </select>
-              </div>
-            </div>
-            <div class="form-row">
-              <div class="form-group">
-                <label>السعر (ج.م)</label>
-                <input type="number" id="setMenuPrice" placeholder="20" />
-              </div>
-              <div class="form-group">
-                <label>شكل الأيقونة (اختياري)</label>
-                <select id="setMenuIcon">
-                  <option value="auto">🤖 تلقائي حسب الاسم</option>
-                  <option value="can">🥤 كانز / صودا</option>
-                  <option value="water">💧 زجاجة مياه</option>
-                  <option value="coffee">☕ فنجان قهوة / إسبريسو</option>
-                  <option value="tea">🍵 كوب شاي / أعشاب</option>
-                  <option value="iced">🧋 كوب مثلج / آيس كوفي / شيك</option>
-                  <option value="juice">🍹 عصير / موهيتو</option>
-                  <option value="snack">🍟 سناكس / شيبسي</option>
-                  <option value="sweet">🧇 حلويات / وافل / مولتن</option>
-                </select>
-              </div>
-            </div>
-            <button id="btnAddMenuItem" class="btn btn-primary btn-block">➕ إضافة صنف للمنيو</button>
-            <div id="settingsMenuList" class="mini-list"></div>
-          </div>
-
         </div>
       </section>
     </main>
   </div>
 
   <!-- ================= MODALS ================= -->
+
+  <!-- MODAL 0: Management Password Unlock Modal -->
+  <div id="modalMgmtAuth" class="modal-backdrop hidden">
+    <div class="modal-box modal-sm">
+      <div class="modal-header">
+        <h3>🔐 دخول الإدارة (Management)</h3>
+        <button class="modal-close" onclick="closeModal('modalMgmtAuth')">✕</button>
+      </div>
+      <div class="modal-body">
+        <input type="hidden" id="mgmtTargetTab" value="dashboard" />
+        <p class="hint-text">أدخل باسورد الإدارة لفتح الداشبورد ولوحة التحكم.</p>
+        <div class="form-group">
+          <label>باسورد الإدارة *</label>
+          <input type="password" id="mgmtPasswordInput" class="pin-input" placeholder="••••" autocomplete="off" />
+        </div>
+        <p id="mgmtAuthError" class="error-text hidden">باسورد الإدارة غير صحيح</p>
+      </div>
+      <div class="modal-footer">
+        <button type="button" id="btnUnlockMgmt" class="btn btn-primary btn-block btn-lg">🔓 فتح الإدارة</button>
+      </div>
+    </div>
+  </div>
 
   <!-- MODAL 1: Start Room Session (Double Click on PS5 Card) -->
   <div id="modalStartRoom" class="modal-backdrop hidden">
@@ -915,7 +1160,7 @@
     </div>
   </div>
 
-  <!-- MODAL 6: Open Shift -->
+  <!-- MODAL 6: Open Shift (Mandatory Business Day Selection) -->
   <div id="modalOpenShift" class="modal-backdrop hidden">
     <div class="modal-box modal-sm">
       <div class="modal-header">
@@ -924,12 +1169,17 @@
       </div>
       <div class="modal-body">
         <div class="form-group">
+          <label>اختر يوم العمل (الوردية هتتقفل أوتوماتيك على اليوم ده) *</label>
+          <input type="date" id="openShiftBusinessDate" required />
+          <small id="openShiftDayNameHint" class="hint-text" style="color:var(--ps-cyan);font-weight:700;"></small>
+        </div>
+        <div class="form-group">
           <label>رصيد الكاش الافتتاحي بالدرج (ج.م)</label>
           <input type="number" id="openShiftCashInput" value="0" min="0" />
         </div>
       </div>
       <div class="modal-footer">
-        <button id="btnConfirmOpenShift" class="btn btn-success btn-block btn-lg">▶️ بدء الوردية</button>
+        <button id="btnConfirmOpenShift" class="btn btn-success btn-block btn-lg">▶️ بدء الوردية على اليوم المختار</button>
       </div>
     </div>
   </div>
@@ -951,8 +1201,8 @@
               <select id="handoverTargetUser"></select>
             </div>
             <div class="form-group">
-              <label>الرقم السري (PIN) للمُستلِم *</label>
-              <input type="password" id="handoverTargetPin" maxlength="8" inputmode="numeric" placeholder="••••" />
+              <label>الباسورد / PIN للمُستلِم *</label>
+              <input type="password" id="handoverTargetPin" maxlength="20" placeholder="••••" />
             </div>
           </div>
           <div class="form-row">
@@ -993,11 +1243,11 @@
             <input type="number" id="closeShiftActualCash" min="0" placeholder="0" />
           </div>
           <div id="closeShiftDiffBadge" class="balance-status">أدخل المبلغ الفعلي بالدرج</div>
-          <button id="btnConfirmCloseShift" class="btn btn-danger btn-block btn-lg">🔒 تأكيد تقفيل الوردية نهائياً</button>
+          <button id="btnConfirmCloseShift" class="btn btn-danger btn-block btn-lg">🔒 تأكيد تقفيل الوردية على نفس اليوم</button>
         </div>
 
         <div id="postCloseActionsBox" class="post-close-actions hidden">
-          <div class="success-banner">✅ تم تقفيل الوردية وحفظ التقرير بنجاح!</div>
+          <div class="success-banner">✅ تم تقفيل الوردية وحفظ التقرير على نفس اليوم بنجاح!</div>
           <button id="btnSendWhatsappReport" class="btn btn-whatsapp btn-block btn-lg">📲 إرسال تقرير اليوم على واتساب المدير</button>
           <button id="btnCopyShiftReport" class="btn btn-outline btn-block">📋 نسخ نص التقرير</button>
         </div>
@@ -1007,7 +1257,7 @@
 
   <!-- Thermal Print Area -->
   <div id="printReceiptArea" class="print-only">
-    <div id="receiptPrintContent" class="receipt-paper"></div>
+    <div id="receiptPrintContent" class="receipt-paper receipt-80mm"></div>
   </div>
 
   <script src="app.js"></script>
