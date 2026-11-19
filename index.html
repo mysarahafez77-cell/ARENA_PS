@@ -183,22 +183,22 @@
             </div>
           </div>
 
-          <!-- KPI Cards (Dynamic based on filters) -->
+          <!-- Unified KPI Cards (Matched with Shift Tab) -->
           <div class="kpi-grid">
             <div class="kpi-card highlight">
-              <span>إجمالي المبيعات (حسب الفلتر)</span>
+              <span>إجمالي المبيعات (لعب + كافيه)</span>
               <strong id="dashTodayTotal">0 ج.م</strong>
             </div>
             <div class="kpi-card">
-              <span>إيراد الغرف (المفلتر)</span>
+              <span>إيراد وقت اللعب (الغرف)</span>
               <strong id="dashFilteredRoomsRev">0 ج.م</strong>
             </div>
             <div class="kpi-card info">
-              <span>إيراد المشاريب والأصناف (المفلتر)</span>
+              <span>إيراد الكافيه وطلبات الغرف</span>
               <strong id="dashFilteredDrinksRev">0 ج.م</strong>
             </div>
-            <div class="kpi-card">
-              <span>الكاش الفعلي بالدرج الآن</span>
+            <div class="kpi-card highlight">
+              <span>الكاش الفعلي المفروض بالدرج</span>
               <strong id="dashDrawerCash">0 ج.م</strong>
             </div>
             <div class="kpi-card warning">
@@ -210,10 +210,14 @@
               <strong id="dashTodayNotahCollected">0 ج.م</strong>
             </div>
             <div class="kpi-card">
-              <span>فودافون كاش</span>
+              <span>تحصيل فودافون كاش</span>
               <strong id="dashTodayVfCash">0 ج.م</strong>
             </div>
             <div class="kpi-card danger">
+              <span>المصروفات النثرية</span>
+              <strong id="dashTodayExpenses">0 ج.م</strong>
+            </div>
+            <div class="kpi-card warning">
               <span>إجمالي مستحقات النوتة بالسوق</span>
               <strong id="dashMarketNotah">0 ج.م</strong>
             </div>
@@ -467,7 +471,7 @@
         <!-- Closed Shift Banner -->
         <div id="shiftClosedCard" class="card empty-shift-card hidden">
           <h2>🔒 لا توجد وردية مفتوحة حالياً</h2>
-          <p>افتح وردية جديدة وحدد **اليوم** اللي هتشتغل عليه عشان كل الحسابات تتقفل أوتوماتيك على نفس اليوم.</p>
+          <p>افتح وردية جديدة وحدد <strong>اليوم</strong> اللي هتشتغل عليه عشان كل الحسابات تتقفل أوتوماتيك على نفس اليوم.</p>
           <button id="btnShowOpenShift" class="btn btn-success btn-lg">🟢 فتح وردية جديدة واختيار اليوم</button>
         </div>
 
@@ -485,17 +489,22 @@
             </div>
           </div>
 
+          <!-- Unified KPI Grid (100% Matched with Dashboard) -->
           <div class="kpi-grid">
             <div class="kpi-card">
               <span>رصيد بداية الدرج</span>
               <strong id="shiftStartCash">0 ج.م</strong>
             </div>
-            <div class="kpi-card">
-              <span>إيراد الغرف</span>
-              <strong id="shiftRoomsRev">0 ج.م</strong>
+            <div class="kpi-card highlight">
+              <span>إجمالي مبيعات الوردية (لعب + كافيه)</span>
+              <strong id="shiftTotalSales">0 ج.م</strong>
             </div>
             <div class="kpi-card">
-              <span>إيراد الترابيزات والكافيه</span>
+              <span>إيراد وقت اللعب (الغرف)</span>
+              <strong id="shiftRoomsRev">0 ج.م</strong>
+            </div>
+            <div class="kpi-card info">
+              <span>إيراد الكافيه وطلبات الغرف</span>
               <strong id="shiftCafeRev">0 ج.م</strong>
             </div>
             <div class="kpi-card info">
@@ -542,8 +551,8 @@
             </div>
 
             <div class="card">
-              <h3 class="card-title">🧾 حركات الوردية الحالية</h3>
-              <div id="shiftTransactionsList" class="mini-list"></div>
+              <h3 class="card-title">🧾 حركات الوردية الحالية (مبيعات + مصروفات)</h3>
+              <div id="shiftTransactionsList" class="mini-list" style="max-height:480px;"></div>
             </div>
           </div>
         </div>
@@ -586,15 +595,15 @@
 
           <div class="kpi-grid">
             <div class="kpi-card highlight">
-              <span>إجمالي المبيعات (شامل النوتة)</span>
+              <span>إجمالي المبيعات (لعب + كافيه)</span>
               <strong id="repTotalRevenue">0 ج.م</strong>
             </div>
             <div class="kpi-card">
-              <span>إيراد الغرف</span>
+              <span>إيراد وقت اللعب (الغرف)</span>
               <strong id="repRoomsRev">0 ج.م</strong>
             </div>
-            <div class="kpi-card">
-              <span>إيراد الترابيزات والكافيه</span>
+            <div class="kpi-card info">
+              <span>إيراد الكافيه وطلبات الغرف</span>
               <strong id="repCafeRev">0 ج.م</strong>
             </div>
             <div class="kpi-card warning">
@@ -688,7 +697,7 @@
             <!-- Management Password, Users & WhatsApp -->
             <div class="card">
               <h3 class="card-title">🔑 باسورد الإدارة (قفل الداشبورد والإعدادات)</h3>
-              <p class="hint-text">هذا الباسورد مخصص لفتح الداشبورد والتقارير والإعدادات فقط.</p>
+              <p class="hint-text">هذا الباسورد مخصص لحساب Admin وفتح الداشبورد والتقارير والإعدادات.</p>
               <div class="form-row">
                 <div class="form-group">
                   <label>الباسورد الجديد للإدارة</label>
@@ -868,7 +877,7 @@
                 </div>
                 <button id="btnAddGame" class="btn btn-primary">➕ إضافة</button>
               </div>
-              <div id="settingsGamesList" class="tags-list"></div>
+              <div id="settingsGamesList" class="mini-list" style="max-height:240px;"></div>
             </div>
 
           </div>
@@ -901,7 +910,7 @@
     </div>
   </div>
 
-  <!-- MODAL 1: Start Room Session (Double Click on PS5 Card) -->
+  <!-- MODAL 1: Start Room Session (Double Click on PS5 Card OR From Reservation) -->
   <div id="modalStartRoom" class="modal-backdrop hidden">
     <div class="modal-box">
       <div class="modal-header">
@@ -910,6 +919,13 @@
       </div>
       <div class="modal-body">
         <input type="hidden" id="startRoomId" />
+
+        <!-- Room Selector (Active especially when starting from a Reservation or switching room) -->
+        <div id="startRoomSelectBox" class="form-group">
+          <label>🎮 اختر الغرفة المتاحة للتشغيل *</label>
+          <select id="startRoomSelect"></select>
+        </div>
+
         <div class="form-group">
           <label>اختر نظام اللعب</label>
           <div class="mode-selector">
@@ -999,7 +1015,7 @@
           <span>سيتم التحويل من الآن إلى:</span>
           <strong id="switchTargetLabel">Multi (زوجي)</strong>
         </div>
-        <p class="hint-text">سيتم احتساب الوقت السابق بسعره تلقائياً، وبدء احتساب الوقت الجديد بالسعر المحدث على نفس اللعبة.</p>
+        <p class="hint-text">سيتم احتساب الوقت السابق بسعره تلقائياً، وبدء احتساب الوقت الجديد بالسعر المحدث على نفس اللعبة مع تفصيل الفترتين في الفاتورة.</p>
       </div>
       <div class="modal-footer">
         <button id="btnConfirmSwitchMode" class="btn btn-primary btn-block btn-lg">✅ تأكيد التحويل</button>
@@ -1044,7 +1060,7 @@
     </div>
   </div>
 
-  <!-- MODAL 4: Checkout & Notah Split Payment (SINGLE BUTTON: تقفيل وطباعة) -->
+  <!-- MODAL 4: Checkout & Multi-Client Notah Split Payment -->
   <div id="modalCheckout" class="modal-backdrop hidden">
     <div class="modal-box">
       <div class="modal-header">
@@ -1081,23 +1097,29 @@
               <input type="number" id="payVfCash" min="0" value="0" />
             </div>
             <div class="pay-field notah-field">
-              <label>📒 على النوتة (آجل)</label>
+              <label>📒 إجمالي على النوتة</label>
               <input type="number" id="payNotah" min="0" value="0" />
             </div>
           </div>
 
+          <!-- Multi-Client Notah Split Section -->
           <div id="checkoutNotahClientBox" class="notah-client-box hidden">
             <div class="notah-box-header">
-              <label>اختر بروفايل العميل لتسجيل النوتة عليه *</label>
-              <button type="button" id="btnToggleQuickClient" class="btn btn-outline btn-xs">+ عميل جديد</button>
+              <label style="margin:0;font-weight:800;color:var(--warning);">📒 توزيع مبلغ النوتة على عميل أو أكثر *</label>
+              <div class="btn-row">
+                <button type="button" id="btnAddNotahSplitRow" class="btn btn-warning btn-xs">+ عميل آخر للنوتة</button>
+                <button type="button" id="btnToggleQuickClient" class="btn btn-outline btn-xs">+ إنشاء عميل جديد</button>
+              </div>
             </div>
-            <select id="checkoutNotahClientSelect"></select>
 
-            <div id="quickClientForm" class="quick-client-form hidden">
+            <div id="quickClientForm" class="quick-client-form hidden" style="margin-bottom:10px;">
               <input type="text" id="quickClientName" placeholder="اسم العميل الجديد" />
               <input type="tel" id="quickClientPhone" placeholder="رقم الموبايل" dir="ltr" />
-              <button type="button" id="btnSaveQuickClient" class="btn btn-primary btn-sm">حفظ واختيار</button>
+              <button type="button" id="btnSaveQuickClient" class="btn btn-primary btn-sm">حفظ</button>
             </div>
+
+            <div id="notahSplitsList" class="notah-splits-list"></div>
+            <div id="notahSplitStatus" class="notah-split-status"></div>
           </div>
 
           <div id="checkoutBalanceStatus" class="balance-status valid">المبلغ مطابق للإجمالي ✅</div>
